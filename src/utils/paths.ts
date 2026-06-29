@@ -1,86 +1,244 @@
 import os from 'os';
 import path from 'path';
-import fs from 'fs';
+import {
+  EngineContractError,
+  type GoatArchitecture,
+  type GoatPlatform,
+  type ReleaseChannel,
+  type ResolvedEngine,
+} from '../engine/contract.js';
 
 export interface EngineResolution {
   path: string | null;
-  source: 'env' | 'config' | 'default' | 'none';
+  manifestPath: string | null;
+  source: 'local-install' | 'dev-env' | 'env' | 'none';
+  releaseChannel: ReleaseChannel;
+  platform: GoatPlatform | null;
+  architecture: GoatArchitecture | null;
+  developmentOverride: boolean;
+  error: EngineContractError | null;
 }
 
-export function getAppDataDir(): string {
-  const home = os.homedir();
-  switch (process.platform) {
+export interface AppPathOptions {
+  env?: NodeJS.ProcessEnv;
+  homeDir?: string;
+  platform?: NodeJS.Platform;
+}
+
+export interface EnginePathOptions extends AppPathOptions {
+  architecture?: string;
+  appDataDir?: string;
+  releaseChannel?: ReleaseChannel;
+}
+
+export function getPathModule(platform: NodeJS.Platform): typeof path.win32 | typeof path.posix {
+  return platform === 'win32' ? path.win32 : path.posix;
+}
+
+export function getSupportedPlatform(platform: NodeJS.Platform): GoatPlatform | null {
+  return platform === 'win32' || platform === 'darwin' ? platform : null;
+}
+
+export function getSupportedArchitecture(architecture: string): GoatArchitecture | null {
+  return architecture === 'x64' || architecture === 'arm64' ? architecture : null;
+}
+
+export function getEngineExecutableName(platform: GoatPlatform): string {
+  return platform === 'win32' ? 'goat-engine.exe' : 'goat-engine';
+}
+
+export function getAppDataDir(options: AppPathOptions = {}): string {
+  const env = options.env ?? process.env;
+  const home = options.homeDir ?? os.homedir();
+  const platform = options.platform ?? process.platform;
+  const pathModule = getPathModule(platform);
+
+  switch (platform) {
     case 'win32':
-      return process.env.LOCALAPPDATA
-        ? path.join(process.env.LOCALAPPDATA, 'goat')
-        : path.join(home, 'AppData', 'Local', 'goat');
+      return env.LOCALAPPDATA
+        ? pathModule.join(env.LOCALAPPDATA, 'goat')
+        : pathModule.join(home, 'AppData', 'Local', 'goat');
     case 'darwin':
-      return path.join(home, 'Library', 'Application Support', 'goat');
+      return pathModule.join(home, 'Library', 'Application Support', 'goat');
     default:
-      return process.env.XDG_DATA_HOME
-        ? path.join(process.env.XDG_DATA_HOME, 'goat')
-        : path.join(home, '.local', 'share', 'goat');
+      return env.XDG_DATA_HOME
+        ? pathModule.join(env.XDG_DATA_HOME, 'goat')
+        : pathModule.join(home, '.local', 'share', 'goat');
   }
 }
 
-export function getCacheDir(): string {
-  const home = os.homedir();
-  switch (process.platform) {
+export function getCacheDir(options: AppPathOptions = {}): string {
+  const env = options.env ?? process.env;
+  const home = options.homeDir ?? os.homedir();
+  const platform = options.platform ?? process.platform;
+  const pathModule = getPathModule(platform);
+
+  switch (platform) {
     case 'win32':
-      return process.env.LOCALAPPDATA
-        ? path.join(process.env.LOCALAPPDATA, 'goat', 'Cache')
-        : path.join(home, 'AppData', 'Local', 'goat', 'Cache');
+      return env.LOCALAPPDATA
+        ? pathModule.join(env.LOCALAPPDATA, 'goat', 'Cache')
+        : pathModule.join(home, 'AppData', 'Local', 'goat', 'Cache');
     case 'darwin':
-      return path.join(home, 'Library', 'Caches', 'goat');
+      return pathModule.join(home, 'Library', 'Caches', 'goat');
     default:
-      return process.env.XDG_CACHE_HOME
-        ? path.join(process.env.XDG_CACHE_HOME, 'goat')
-        : path.join(home, '.cache', 'goat');
+      return env.XDG_CACHE_HOME
+        ? pathModule.join(env.XDG_CACHE_HOME, 'goat')
+        : pathModule.join(home, '.cache', 'goat');
   }
 }
 
-export function getEnginePath(): EngineResolution {
-  // 1. Env variable check
-  if (process.env.GOAT_ENGINE_PATH) {
+export function getLegacyEngineConfigPath(options: AppPathOptions = {}): string {
+  const platform = options.platform ?? process.platform;
+  const pathModule = getPathModule(platform);
+  return pathModule.join(getAppDataDir(options), 'config.json');
+}
+
+export function getEngineInstallRoot(options: EnginePathOptions = {}): string | null {
+  const platform = getSupportedPlatform(options.platform ?? process.platform);
+  const architecture = getSupportedArchitecture(options.architecture ?? process.arch);
+  if (!platform || !architecture) return null;
+
+  const releaseChannel = options.releaseChannel ?? 'stable';
+  const pathModule = getPathModule(platform);
+  const appDataDir = options.appDataDir ?? getAppDataDir(options);
+  return pathModule.join(appDataDir, 'engines', releaseChannel, `${platform}-${architecture}`);
+}
+
+export function getEnginePath(options: EnginePathOptions = {}): EngineResolution {
+  const env = options.env ?? process.env;
+  const rawPlatform = options.platform ?? process.platform;
+  const rawArchitecture = options.architecture ?? process.arch;
+  const platform = getSupportedPlatform(rawPlatform);
+  const architecture = getSupportedArchitecture(rawArchitecture);
+
+  if (!platform) {
+    return noneResolution(
+      'stable',
+      null,
+      architecture,
+      new EngineContractError(
+        'GOAT_UNSUPPORTED_PLATFORM',
+        `GOAT supports Windows and macOS for v0.0.5, but this platform is ${rawPlatform}.`,
+        'Run GOAT on Windows or macOS, or install a launcher version that supports this platform.',
+      ),
+    );
+  }
+
+  if (!architecture) {
+    return noneResolution(
+      'stable',
+      platform,
+      null,
+      new EngineContractError(
+        'GOAT_UNSUPPORTED_ARCHITECTURE',
+        `GOAT supports x64 and arm64 for v0.0.5, but this architecture is ${rawArchitecture}.`,
+        'Use an x64 or arm64 Windows/macOS machine, or install a compatible launcher version.',
+      ),
+    );
+  }
+
+  const pathModule = getPathModule(platform);
+  const devPath = env.GOAT_DEV_ENGINE_PATH?.trim();
+  if (devPath) {
+    if (env.GOATCLI_DEV !== '1') {
+      return noneResolution(
+        'dev',
+        platform,
+        architecture,
+        new EngineContractError(
+          'GOAT_DEV_ENGINE_PATH_DISABLED',
+          'GOAT_DEV_ENGINE_PATH is set, but GOATCLI_DEV=1 is not set.',
+          'Set GOATCLI_DEV=1 for local launcher development, or unset GOAT_DEV_ENGINE_PATH for production launch.',
+        ),
+      );
+    }
+
     return {
-      path: path.resolve(process.env.GOAT_ENGINE_PATH),
-      source: 'env',
+      path: devPath,
+      manifestPath: null,
+      source: 'dev-env',
+      releaseChannel: 'dev',
+      platform,
+      architecture,
+      developmentOverride: true,
+      error: null,
     };
   }
 
-  // 2. Config file check
-  const appDataDir = getAppDataDir();
-  const configPath = path.join(appDataDir, 'config.json');
-  try {
-    if (fs.existsSync(configPath)) {
-      const configRaw = fs.readFileSync(configPath, 'utf-8');
-      const config = JSON.parse(configRaw);
-      // Validate to prevent prototype pollution
-      if (
-        config &&
-        typeof config === 'object' &&
-        !Array.isArray(config) &&
-        Object.getPrototypeOf(config) === Object.prototype &&
-        typeof config.enginePath === 'string'
-      ) {
-        // Resolve relative paths against the config directory for deterministic behavior
-        return {
-          path: path.resolve(appDataDir, config.enginePath),
-          source: 'config',
-        };
-      }
-    }
-  } catch {
-    // Ignore read or parse errors to fallback
+  const legacyEnginePath = env.GOAT_ENGINE_PATH?.trim();
+  if (legacyEnginePath) {
+    return {
+      path: legacyEnginePath,
+      manifestPath: null,
+      source: 'env',
+      releaseChannel: 'stable',
+      platform,
+      architecture,
+      developmentOverride: true,
+      error: null,
+    };
   }
 
-  // 3. Default path check
-  const exeName = process.platform === 'win32' ? 'goat-engine.exe' : 'goat-engine';
-  const defaultPath = path.join(appDataDir, 'bin', exeName);
-  
-  // We check if it exists at default path, but if not, we can still report it as default fallback
+  const releaseChannel = options.releaseChannel ?? 'stable';
+  const installRoot = getEngineInstallRoot({
+    ...options,
+    platform,
+    architecture,
+    releaseChannel,
+  });
+
+  if (!installRoot) {
+    return noneResolution(releaseChannel, platform, architecture, null);
+  }
+
+  const executablePath = pathModule.join(installRoot, 'bin', getEngineExecutableName(platform));
   return {
-    path: defaultPath,
-    source: fs.existsSync(defaultPath) ? 'default' : 'none',
+    path: executablePath,
+    manifestPath: pathModule.join(installRoot, 'goat-engine.json'),
+    source: 'local-install',
+    releaseChannel,
+    platform,
+    architecture,
+    developmentOverride: false,
+    error: null,
+  };
+}
+
+export function toResolvedEngine(resolution: EngineResolution): ResolvedEngine {
+  if (resolution.error) throw resolution.error;
+  if (!resolution.path || !resolution.platform || !resolution.architecture) {
+    throw new EngineContractError(
+      'GOAT_ENGINE_MISSING',
+      'GOAT engine executable is not resolved for this platform.',
+      'Install the GOAT engine locally, then run goat doctor to verify the installation.',
+    );
+  }
+
+  return {
+    executablePath: resolution.path,
+    manifestPath: resolution.manifestPath,
+    source: resolution.source === 'dev-env' || resolution.source === 'env' ? resolution.source : 'local-install',
+    releaseChannel: resolution.releaseChannel,
+    platform: resolution.platform,
+    architecture: resolution.architecture,
+    developmentOverride: resolution.developmentOverride,
+  };
+}
+
+function noneResolution(
+  releaseChannel: ReleaseChannel,
+  platform: GoatPlatform | null,
+  architecture: GoatArchitecture | null,
+  error: EngineContractError | null,
+): EngineResolution {
+  return {
+    path: null,
+    manifestPath: null,
+    source: 'none',
+    releaseChannel,
+    platform,
+    architecture,
+    developmentOverride: false,
+    error,
   };
 }
