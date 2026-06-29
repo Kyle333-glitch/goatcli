@@ -1,7 +1,6 @@
 import { intro, outro, spinner, note, log } from '@clack/prompts';
 import fs from 'fs';
-import path from 'path';
-import { getAppDataDir, getCacheDir, getEnginePath } from '../utils/paths.js';
+import { getAppDataDir, getCacheDir, getEnginePath, getLegacyEngineConfigPath, toResolvedEngine } from '../utils/paths.js';
 import {
   getGitVersion,
   getShell,
@@ -11,14 +10,21 @@ import {
   checkMacExecutable,
   checkWindowsPathProblems,
 } from '../utils/system.js';
+import { EngineContractError, formatEngineContractError, type LauncherVersion } from '../engine/contract.js';
+import { validateEngine, type ValidatedEngine } from '../engine/validate.js';
+import { getLauncherVersion } from '../version.js';
 
-export async function runDoctor(): Promise<void> {
+export interface DoctorOptions {
+  launcherVersion?: LauncherVersion;
+}
+
+export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
+  const launcherVersion = options.launcherVersion ?? getLauncherVersion();
   intro('GOAT System Diagnostics (Doctor)');
 
   const s = spinner();
   s.start('Inspecting system environment...');
 
-  // 1. Gather basic system information
   const osPlatform = process.platform;
   const osArch = process.arch;
   const nodeVersion = process.version;
@@ -26,16 +32,15 @@ export async function runDoctor(): Promise<void> {
   const shell = getShell();
   const gitVersion = await getGitVersion();
 
-  // 2. Resolve configured engine paths
   const engineResolution = getEnginePath();
   const appDataDir = getAppDataDir();
   const cacheDir = getCacheDir();
+  const legacyConfigPath = getLegacyEngineConfigPath();
+  const legacyConfigExists = fs.existsSync(legacyConfigPath);
 
-  // 3. Inspect writable directories
   const appDataWritable = checkDirectoryWritable(appDataDir);
   const cacheWritable = checkDirectoryWritable(cacheDir);
 
-  // 4. Check path length constraints
   const pathsToCheck = [
     { name: 'Application Data Directory', path: appDataDir },
     { name: 'Cache Directory', path: cacheDir },
@@ -43,9 +48,11 @@ export async function runDoctor(): Promise<void> {
   if (engineResolution.path) {
     pathsToCheck.push({ name: 'Engine Executable Path', path: engineResolution.path });
   }
+  if (engineResolution.manifestPath) {
+    pathsToCheck.push({ name: 'Engine Manifest Path', path: engineResolution.manifestPath });
+  }
   const pathLengthStatuses = checkPathLengthProblems(pathsToCheck);
 
-  // 5. Check platform-specific problems
   let windowsIssues = null;
   let macStatus = null;
   let longPathsEnabled: boolean | null = null;
@@ -53,127 +60,130 @@ export async function runDoctor(): Promise<void> {
   if (osPlatform === 'win32') {
     windowsIssues = checkWindowsPathProblems();
     longPathsEnabled = await getWindowsLongPathsEnabled();
-  } else if (osPlatform === 'darwin') {
-    if (engineResolution.path) {
-      macStatus = await checkMacExecutable(engineResolution.path);
-    }
+  } else if (osPlatform === 'darwin' && engineResolution.path) {
+    macStatus = await checkMacExecutable(engineResolution.path);
   }
 
-  // 6. Check engine executable status
-  let engineExists = false;
-  if (engineResolution.path) {
-    try {
-      const stats = fs.statSync(engineResolution.path);
-      engineExists = stats.isFile();
-    } catch {
-      engineExists = false;
+  let validatedEngine: ValidatedEngine | null = null;
+  let engineValidationError: EngineContractError | null = null;
+  try {
+    validatedEngine = validateEngine(toResolvedEngine(engineResolution), launcherVersion);
+  } catch (error) {
+    if (error instanceof EngineContractError) {
+      engineValidationError = error;
+    } else {
+      throw error;
     }
   }
 
   s.stop('Diagnostics completed.');
 
-  // Render System Information Note
   const sysInfoContent = [
-    `• OS & Arch:       ${osPlatform} (${osArch})`,
-    `• Node.js Version:  ${nodeVersion}`,
-    `• Git Version:      ${gitVersion ? gitVersion : '⚠️ NOT FOUND (Git is required for many features)'}`,
-    `• Shell:            ${shell}`,
-    `• Working Dir:      ${cwd}`,
+    `- OS & Arch:       ${osPlatform} (${osArch})`,
+    `- Node.js Version:  ${nodeVersion}`,
+    `- GOAT CLI Version: ${launcherVersion}`,
+    `- Git Version:      ${gitVersion ? gitVersion : 'NOT FOUND (Git is required for many features)'}`,
+    `- Shell:            ${shell}`,
+    `- Working Dir:      ${cwd}`,
   ].join('\n');
   note(sysInfoContent, 'System Information');
 
-  // Render Engine & Paths Note
-  const hasEngineSpaces = osPlatform === 'win32' && engineResolution.path && engineResolution.path.includes(' ');
   const engineStatusText = engineResolution.path
-    ? `${engineResolution.path} (${engineExists ? '✅ Available' : '❌ Not Found'})`
-    : '❌ Not Configured';
+    ? `${engineResolution.path} (${validatedEngine ? 'valid' : 'not valid'})`
+    : 'not resolved';
+  const manifestStatusText = engineResolution.manifestPath
+    ? `${engineResolution.manifestPath} (${validatedEngine?.manifest ? 'valid' : 'not valid'})`
+    : engineResolution.source === 'env'
+      ? 'not required for legacy GOAT_ENGINE_PATH override'
+    : engineResolution.developmentOverride
+      ? 'not required for GOATCLI_DEV=1 development override'
+      : 'not resolved';
+  const sourceText = engineResolution.source === 'dev-env'
+    ? 'GOAT_DEV_ENGINE_PATH with GOATCLI_DEV=1'
+    : engineResolution.source === 'env'
+      ? 'GOAT_ENGINE_PATH legacy override'
+    : engineResolution.source === 'local-install'
+      ? 'Local app-data engine install'
+      : 'None';
 
   const pathsContent = [
-    `• App Data Dir:     ${appDataDir} (${appDataWritable.writable ? '✅ Writable' : '❌ Read-Only'}${appDataWritable.exists ? ', Exists' : ', Will create'})`,
-    `• Cache Dir:        ${cacheDir} (${cacheWritable.writable ? '✅ Writable' : '❌ Read-Only'}${cacheWritable.exists ? ', Exists' : ', Will create'})`,
-    `• Engine Path:      ${engineStatusText}`,
-    `• Path Source:      ${engineResolution.source === 'env' ? 'Environment variable (GOAT_ENGINE_PATH)' : engineResolution.source === 'config' ? 'Config file (config.json)' : engineResolution.source === 'default' ? 'Default AppData location' : 'None'}`,
+    `- App Data Dir:     ${appDataDir} (${appDataWritable.writable ? 'writable' : 'read-only'}${appDataWritable.exists ? ', exists' : ', will create'})`,
+    `- Cache Dir:        ${cacheDir} (${cacheWritable.writable ? 'writable' : 'read-only'}${cacheWritable.exists ? ', exists' : ', will create'})`,
+    `- Engine Path:      ${engineStatusText}`,
+    `- Manifest Path:    ${manifestStatusText}`,
+    `- Path Source:      ${sourceText}`,
+    `- Release Channel:  ${engineResolution.releaseChannel}`,
+    `- Engine Checksum:  ${validatedEngine?.checksum ?? 'not available'}`,
   ].join('\n');
-  note(pathsContent, 'GOAT Configuration & Writable Paths');
+  note(pathsContent, 'GOAT Configuration & Engine Contract');
 
-  // Diagnostic checklist and recommendations
   const warnings: string[] = [];
   const errors: string[] = [];
 
-  // Git check
   if (!gitVersion) {
     errors.push('Git is not installed or not available in the system PATH. Please install Git.');
   }
 
-  // Writable checks
   if (!appDataWritable.writable) {
-    errors.push(`Application data directory is not writable: ${appDataWritable.error || 'Permission Denied'}`);
+    errors.push(`Application data directory is not writable: ${appDataWritable.error || 'Permission denied'}`);
   }
   if (!cacheWritable.writable) {
-    errors.push(`Cache directory is not writable: ${cacheWritable.error || 'Permission Denied'}`);
+    errors.push(`Cache directory is not writable: ${cacheWritable.error || 'Permission denied'}`);
   }
 
-  // Path length checks
-  pathLengthStatuses.forEach((p) => {
-    if (p.hasProblem) {
-      warnings.push(`Path is too long (> 260 chars) on Windows and may cause issues: ${p.name} (${p.path})`);
-    }
-  });
-
-  // Windows checks
-  if (osPlatform === 'win32') {
-    if (longPathsEnabled === false) {
-      warnings.push('Windows Registry "LongPathsEnabled" is disabled. Path operations longer than 260 characters might fail.');
-    }
-    if (windowsIssues) {
-      if (!windowsIssues.pathExtHasExe) {
-        errors.push('PATHEXT environment variable does not contain ".EXE". Windows might fail to launch executables.');
-      }
-      if (!windowsIssues.npmBinInPath) {
-        warnings.push('npm global binaries directory not detected in PATH. You may not be able to run "goat" globally.');
-      }
-      if (hasEngineSpaces) {
-        warnings.push('Engine path contains spaces. Quoting might be required when spawning the process.');
-      }
+  for (const status of pathLengthStatuses) {
+    if (status.hasProblem) {
+      warnings.push(`Path is too long on Windows and may cause issues: ${status.name} (${status.path})`);
     }
   }
 
-  // macOS / Darwin checks
-  if (osPlatform === 'darwin' && engineResolution.path && engineExists) {
-    if (macStatus) {
-      if (!macStatus.isExecutable) {
-        errors.push(`Engine binary lacks owner execution permissions. Run: chmod +x "${engineResolution.path}"`);
-      }
-      if (macStatus.isQuarantined) {
-        warnings.push(`Engine binary is quarantined by macOS Gatekeeper. Run: xattr -d com.apple.quarantine "${engineResolution.path}"`);
-      }
-      if (!macStatus.codeSignValid) {
-        warnings.push(`Engine binary signature verification failed. The binary may be unsigned or modified.`);
-      }
-    }
-  }
-
-  // Engine not configured/found check
-  if (!engineResolution.path || !engineExists) {
+  if (legacyConfigExists) {
     warnings.push(
-      'GOAT engine executable is not configured or not found. Please set GOAT_ENGINE_PATH or install the engine.'
+      `Legacy ${legacyConfigPath} was found. goatcli v0.0.5 ignores config.json enginePath; use the local engine install path or GOATCLI_DEV=1 with GOAT_DEV_ENGINE_PATH.`,
     );
   }
 
-  // Print Issues & Outro
+  if (engineValidationError) {
+    errors.push(formatEngineContractError(engineValidationError).replace('\n', ' '));
+  }
+
+  if (osPlatform === 'win32') {
+    if (longPathsEnabled === false) {
+      warnings.push('Windows Registry LongPathsEnabled is disabled. Path operations longer than 260 characters might fail.');
+    }
+    if (windowsIssues) {
+      if (!windowsIssues.pathExtHasExe) {
+        errors.push('PATHEXT environment variable does not contain .EXE. Windows might fail to launch executables.');
+      }
+      if (!windowsIssues.npmBinInPath) {
+        warnings.push('npm global binaries directory not detected in PATH. You may not be able to run goat globally.');
+      }
+    }
+  }
+
+  if (osPlatform === 'darwin' && engineResolution.path && macStatus) {
+    if (macStatus.isQuarantined) {
+      warnings.push(`Engine binary is quarantined by macOS Gatekeeper. Run: xattr -d com.apple.quarantine "${engineResolution.path}"`);
+    }
+    if (!macStatus.codeSignValid) {
+      warnings.push('Engine binary signature verification failed. The binary may be unsigned or modified.');
+    }
+  }
+
   if (errors.length > 0 || warnings.length > 0) {
     if (errors.length > 0) {
       log.error('Issues Detected (Critical):');
-      errors.forEach((e) => log.error(`  - ${e}`));
+      errors.forEach((entry) => log.error(`  - ${entry}`));
     }
     if (warnings.length > 0) {
       log.warn('Recommendations (Warnings):');
-      warnings.forEach((w) => log.warn(`  - ${w}`));
+      warnings.forEach((entry) => log.warn(`  - ${entry}`));
     }
-    
-    outro('GOAT Doctor run finished with some warnings/errors. See recommendations above.');
-  } else {
-    log.success('All system checks passed successfully!');
-    outro('GOAT Doctor found no issues. Your environment is healthy! 🐐');
+
+    outro('GOAT Doctor finished with warnings or errors. See recommendations above.');
+    return;
   }
+
+  log.success('All system checks passed successfully.');
+  outro('GOAT Doctor found no issues. Your environment is healthy.');
 }
