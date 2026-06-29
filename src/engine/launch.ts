@@ -11,6 +11,12 @@ import {
   toResolvedEngine,
   type EnginePathOptions,
 } from '../utils/paths.js';
+import {
+  getForwardedSignals as getPlatformForwardedSignals,
+  getParentExitSignal,
+  getPlatformAdapter,
+  type ProcessTerminatorCommand,
+} from '../platform.js';
 
 export interface EngineLaunchResult {
   exitCode: number;
@@ -43,6 +49,7 @@ export interface LaunchEngineOptions extends EnginePathOptions, ValidateEngineOp
   cwd?: string;
   spawnEngine?: SpawnEngine;
   processLike?: ProcessLike;
+  processTerminator?: ProcessTerminatorCommand;
   resolvedEngine?: ResolvedEngine;
 }
 
@@ -65,6 +72,7 @@ export async function launchEngine(options: LaunchEngineOptions): Promise<Engine
     cwd,
     spawnEngine,
     processLike,
+    processTerminator: options.processTerminator,
   });
 }
 
@@ -75,10 +83,12 @@ export function launchValidatedEngine(
     cwd: string;
     spawnEngine?: SpawnEngine;
     processLike?: ProcessLike;
+    processTerminator?: ProcessTerminatorCommand;
   },
 ): Promise<EngineLaunchResult> {
   const processLike = options.processLike ?? process;
   const spawnEngine = options.spawnEngine ?? spawn;
+  const platform = getPlatformAdapter(engine.platform);
   const child = spawnEngine(engine.executablePath, [...args], {
     cwd: options.cwd,
     stdio: 'inherit',
@@ -99,18 +109,18 @@ export function launchValidatedEngine(
 
   const forwardSignal = (signal: NodeJS.Signals) => {
     return () => {
-      terminateChild(child, signal);
+      platform.terminateProcess(child, signal, { runCommand: options.processTerminator });
     };
   };
 
-  for (const signal of getForwardedSignals(engine.platform)) {
+  for (const signal of platform.getForwardedSignals()) {
     const listener = forwardSignal(signal);
     signalListeners.set(signal, listener);
     processLike.on(signal, listener);
   }
 
   const exitListener = () => {
-    terminateChild(child, engine.platform === 'win32' ? 'SIGTERM' : 'SIGHUP');
+    platform.terminateProcess(child, platform.getParentExitSignal(), { runCommand: options.processTerminator });
   };
   processLike.on('exit', exitListener);
 
@@ -139,17 +149,9 @@ export function launchValidatedEngine(
 }
 
 export function getForwardedSignals(platform: NodeJS.Platform): NodeJS.Signals[] {
-  return platform === 'win32'
-    ? ['SIGINT', 'SIGTERM', 'SIGBREAK']
-    : ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  return getPlatformForwardedSignals(platform);
 }
 
-function terminateChild(child: Pick<ChildProcess, 'kill'>, signal: NodeJS.Signals): void {
-  try {
-    child.kill(signal);
-  } catch {
-    // The child may already be gone.
-  }
+export function getLauncherExitSignal(platform: NodeJS.Platform): NodeJS.Signals {
+  return getParentExitSignal(platform);
 }
-
-

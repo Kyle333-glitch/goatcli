@@ -1,9 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { getAppDataDir, getCacheDir, getEnginePath } from './paths.js';
+import { getAppDataDir, getCacheDir, getConfigDir, getEnginePath } from './paths.js';
 
 test('getAppDataDir returns a path string', () => {
   const dir = getAppDataDir();
+  assert.strictEqual(typeof dir, 'string');
+  assert.ok(dir.length > 0);
+});
+
+test('getConfigDir returns a path string', () => {
+  const dir = getConfigDir();
   assert.strictEqual(typeof dir, 'string');
   assert.ok(dir.length > 0);
 });
