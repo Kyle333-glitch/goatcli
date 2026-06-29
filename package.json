@@ -1,0 +1,29 @@
+{
+  "name": "goatcli",
+  "version": "0.0.4",
+  "description": "GOAT public npm launcher",
+  "main": "dist/index.js",
+  "bin": {
+    "goat": "./dist/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test src/**/*.test.ts"
+  },
+  "private": true,
+  "dependencies": {
+    "@clack/prompts": "^0.9.1",
+    "@commander-js/extra-typings": "^12.1.0",
+    "commander": "^12.1.0",
+    "execa": "^9.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
