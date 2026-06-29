@@ -118,8 +118,8 @@ test('Windows process termination uses taskkill for process trees and falls back
     },
   });
 
-  assert.deepEqual(commandCalls, [{ command: 'taskkill', args: ['/pid', '4242', '/T', '/F'] }]);
-  assert.deepEqual(killedSignals, []);
+  assert.deepEqual(commandCalls, [{ command: 'taskkill', args: ['/pid', '4242', '/T'] }]);
+  assert.deepEqual(killedSignals, ['SIGTERM']);
 
   adapter.terminateProcess(child, 'SIGBREAK', {
     runCommand(command, args) {
@@ -128,7 +128,7 @@ test('Windows process termination uses taskkill for process trees and falls back
     },
   });
 
-  assert.deepEqual(killedSignals, ['SIGBREAK']);
+  assert.deepEqual(killedSignals, ['SIGTERM', 'SIGBREAK']);
 });
 
 async function fileExists(filePath: string): Promise<boolean> {

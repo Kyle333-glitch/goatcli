@@ -83,7 +83,7 @@ test('validateEngine rejects macOS engines without executable bit', () => {
 
   assert.throws(
     () => validateEngine(makeResolvedEngine({ executablePath, manifestPath, platform: 'darwin', architecture: 'x64' }), '0.0.5', { fs: fakeFs }),
-    (error) => error instanceof EngineContractError && error.code === 'GOAT_ENGINE_MACOS_NOT_EXECUTABLE',
+    (error) => error instanceof EngineContractError && error.code === 'GOAT_ENGINE_NOT_EXECUTABLE',
   );
 });
 

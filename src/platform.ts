@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -152,7 +153,7 @@ export async function replaceFileAtomically(
 ): Promise<void> {
   const fileSystem = options.fs ?? fs.promises;
   const pathModule = options.pathModule ?? path;
-  const tempPath = `${filePath}.${options.tempSuffix ?? `${process.pid}.${Date.now()}`}.tmp`;
+  const tempPath = `${filePath}.${options.tempSuffix ?? `${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`}.tmp`;
   await fileSystem.mkdir(pathModule.dirname(filePath), { recursive: true });
 
   try {
@@ -221,17 +222,19 @@ function terminateWindowsProcessTree(
   signal: NodeJS.Signals,
   options: { runCommand?: ProcessTerminatorCommand } = {},
 ): void {
-  if (child.pid) {
-    const result = (options.runCommand ?? runProcessTerminator)('taskkill', [
-      '/pid',
-      String(child.pid),
-      '/T',
-      '/F',
-    ]);
-    if (result.status === 0) return;
-  }
-
+  // Try graceful termination first via child.kill
   terminateWithSignal(child, signal);
+
+  if (!child.pid) return;
+
+  const run = options.runCommand ?? runProcessTerminator;
+
+  // Try graceful process tree termination (no /F)
+  const gracefulResult = run('taskkill', ['/pid', String(child.pid), '/T']);
+  if (gracefulResult.status === 0) return;
+
+  // Fall back to forceful termination
+  run('taskkill', ['/pid', String(child.pid), '/T', '/F']);
 }
 
 function terminateWithSignal(child: Pick<ChildProcess, 'kill'>, signal: NodeJS.Signals): void {
@@ -251,16 +254,14 @@ function runProcessTerminator(command: string, args: readonly string[]): Process
 }
 
 async function removeTempFile(fileSystem: AtomicFileSystem, tempPath: string): Promise<void> {
-  if (fileSystem.rm) {
-    await fileSystem.rm(tempPath, { force: true });
-    return;
-  }
-  if (fileSystem.unlink) {
-    try {
+  try {
+    if (fileSystem.rm) {
+      await fileSystem.rm(tempPath, { force: true });
+    } else if (fileSystem.unlink) {
       await fileSystem.unlink(tempPath);
-    } catch {
-      // Best-effort cleanup.
     }
+  } catch {
+    // Best-effort cleanup; ignore errors to avoid shadowing the primary error.
   }
 }
 

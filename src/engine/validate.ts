@@ -86,10 +86,13 @@ export function validateEngine(
   }
 
   if (!platform.hasExecutablePermission(resolved.executablePath, fileSystem)) {
+    const suggestion = resolved.platform === 'win32'
+      ? `Ensure the file has execute permissions and is not blocked by Windows. Run goat doctor again.`
+      : `Run chmod +x "${resolved.executablePath}", then run goat doctor again.`;
     throw new EngineContractError(
-      'GOAT_ENGINE_MACOS_NOT_EXECUTABLE',
+      'GOAT_ENGINE_NOT_EXECUTABLE',
       `GOAT engine is not executable: ${resolved.executablePath}`,
-      `Run chmod +x "${resolved.executablePath}", then run goat doctor again.`,
+      suggestion,
     );
   }
 

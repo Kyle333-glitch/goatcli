@@ -56,10 +56,10 @@ export function checkDirectoryWritable(dirPath: string): DirectoryStatus {
         if (parent === current) break;
         current = parent;
       }
-      if (fs.statSync(current).isDirectory()) {
+      if (current && fs.existsSync(current) && fs.statSync(current).isDirectory()) {
         fs.accessSync(current, fs.constants.W_OK);
       } else {
-        return { path: dirPath, exists: false, writable: false, error: 'Closest existing parent is a file, not a directory' };
+        return { path: dirPath, exists: false, writable: false, error: 'No writable parent directory found' };
       }
       return { path: dirPath, exists: false, writable: true };
     }
@@ -127,7 +127,16 @@ export async function checkMacExecutable(filePath: string, platform: NodeJS.Plat
   status.exists = true;
 
   const adapter = getPlatformAdapterForPlatform(platform);
-  status.isExecutable = adapter?.hasExecutablePermission(filePath) ?? true;
+  if (adapter) {
+    status.isExecutable = adapter.hasExecutablePermission(filePath);
+  } else {
+    try {
+      fs.accessSync(filePath, fs.constants.X_OK);
+      status.isExecutable = true;
+    } catch {
+      status.isExecutable = false;
+    }
+  }
 
   if (adapter?.platform !== 'darwin') {
     return status;

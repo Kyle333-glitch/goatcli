@@ -105,14 +105,14 @@ test('launchValidatedEngine uses Windows taskkill for process-tree termination',
   );
 
   fakeProcess.emit('SIGTERM');
-  assert.deepEqual(commandCalls, [{ command: 'taskkill', args: ['/pid', '4242', '/T', '/F'] }]);
-  assert.deepEqual(child.killedSignals, []);
+  assert.deepEqual(commandCalls, [{ command: 'taskkill', args: ['/pid', '4242', '/T'] }]);
+  assert.deepEqual(child.killedSignals, ['SIGTERM']);
 
   child.emit('exit', 0, null);
   await resultPromise;
 });
 
-test('launchValidatedEngine falls back to child kill when Windows taskkill fails', async () => {
+test('launchValidatedEngine delivers signal via child.kill when Windows taskkill fails', async () => {
   const fakeProcess = new FakeProcess('win32', 'x64', 'D:\\repo');
   const child = new FakeChild(4242);
   const spawnEngine: SpawnEngine = () => child as unknown as ChildProcess;
