@@ -25,7 +25,7 @@ test('runCli handles exact launcher-owned version command', async () => {
     },
   });
 
-  assert.equal(output, '0.0.5\n');
+  assert.equal(output, '0.0.6\n');
 });
 
 test('runCli handles version command with trailing arguments', async () => {
@@ -44,7 +44,7 @@ test('runCli handles version command with trailing arguments', async () => {
     },
   });
 
-  assert.equal(output, '0.0.5\n');
+  assert.equal(output, '0.0.6\n');
 });
 
 test('runCli forwards non-launcher-owned arguments to the engine unchanged', async () => {
@@ -153,8 +153,8 @@ function makeManifest(checksum: string): EngineManifest {
       value: checksum,
     },
     compatibility: {
-      minimumLauncherVersion: '0.0.5',
-      maximumLauncherVersion: '0.0.5',
+      minimumLauncherVersion: '0.0.6',
+      maximumLauncherVersion: '0.0.6',
     },
   };
 }

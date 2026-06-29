@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import { EngineContractError, type EngineManifest, type ResolvedEngine } from './contract.js';
 import {
   getForwardedSignals,
+  getLauncherExitSignal,
   launchEngine,
   launchValidatedEngine,
   type ProcessLike,
@@ -37,7 +38,7 @@ test('launchEngine forwards args, cwd, inherited stdio, no shell, and propagates
 
   const result = await launchEngine({
     args: ['run', '--flag', 'value with spaces', 'unicode-測試'],
-    launcherVersion: '0.0.5',
+    launcherVersion: '0.0.6',
     cwd: 'D:\\work dir',
     platform: 'win32',
     architecture: 'x64',
@@ -82,6 +83,57 @@ test('launchValidatedEngine forwards cancellation signals and removes listeners 
   assert.equal(fakeProcess.listenerCount('SIGTERM'), 0);
   assert.equal(fakeProcess.listenerCount('SIGBREAK'), 0);
   assert.equal(fakeProcess.listenerCount('exit'), 0);
+});
+
+test('launchValidatedEngine uses Windows taskkill for process-tree termination', async () => {
+  const fakeProcess = new FakeProcess('win32', 'x64', 'D:\\repo');
+  const child = new FakeChild(4242);
+  const commandCalls: Array<{ command: string; args: readonly string[] }> = [];
+  const spawnEngine: SpawnEngine = () => child as unknown as ChildProcess;
+  const resultPromise = launchValidatedEngine(
+    { executablePath: 'C:\\GOAT\\goat-engine.exe', platform: 'win32' },
+    [],
+    {
+      cwd: 'D:\\repo',
+      spawnEngine,
+      processLike: fakeProcess,
+      processTerminator(command, args) {
+        commandCalls.push({ command, args });
+        return { status: 0 };
+      },
+    },
+  );
+
+  fakeProcess.emit('SIGTERM');
+  assert.deepEqual(commandCalls, [{ command: 'taskkill', args: ['/pid', '4242', '/T', '/F'] }]);
+  assert.deepEqual(child.killedSignals, []);
+
+  child.emit('exit', 0, null);
+  await resultPromise;
+});
+
+test('launchValidatedEngine falls back to child kill when Windows taskkill fails', async () => {
+  const fakeProcess = new FakeProcess('win32', 'x64', 'D:\\repo');
+  const child = new FakeChild(4242);
+  const spawnEngine: SpawnEngine = () => child as unknown as ChildProcess;
+  const resultPromise = launchValidatedEngine(
+    { executablePath: 'C:\\GOAT\\goat-engine.exe', platform: 'win32' },
+    [],
+    {
+      cwd: 'D:\\repo',
+      spawnEngine,
+      processLike: fakeProcess,
+      processTerminator() {
+        return { status: 1 };
+      },
+    },
+  );
+
+  fakeProcess.emit('SIGBREAK');
+  assert.deepEqual(child.killedSignals, ['SIGBREAK']);
+
+  child.emit('exit', 0, null);
+  await resultPromise;
 });
 
 test('launchValidatedEngine cleans up child on launcher process exit without a shell', async () => {
@@ -134,7 +186,7 @@ test('launchEngine reports spawn failures with stable error code', async () => {
   await assert.rejects(
     () => launchEngine({
       args: [],
-      launcherVersion: '0.0.5',
+      launcherVersion: '0.0.6',
       platform: 'win32',
       architecture: 'x64',
       resolvedEngine: makeResolvedEngine({ executablePath, manifestPath }),
@@ -151,8 +203,17 @@ test('getForwardedSignals includes supported platform termination signals', () =
   assert.deepEqual(getForwardedSignals('darwin'), ['SIGINT', 'SIGTERM', 'SIGHUP']);
 });
 
+test('getLauncherExitSignal follows platform parent-exit behavior', () => {
+  assert.equal(getLauncherExitSignal('win32'), 'SIGTERM');
+  assert.equal(getLauncherExitSignal('darwin'), 'SIGHUP');
+});
+
 class FakeChild extends EventEmitter {
   readonly killedSignals: NodeJS.Signals[] = [];
+
+  constructor(readonly pid?: number) {
+    super();
+  }
 
   kill(signal?: NodeJS.Signals | number): boolean {
     if (typeof signal === 'string') {
@@ -190,8 +251,8 @@ function makeManifest(checksum: string): EngineManifest {
       value: checksum,
     },
     compatibility: {
-      minimumLauncherVersion: '0.0.5',
-      maximumLauncherVersion: '0.0.5',
+      minimumLauncherVersion: '0.0.6',
+      maximumLauncherVersion: '0.0.6',
     },
   };
 }

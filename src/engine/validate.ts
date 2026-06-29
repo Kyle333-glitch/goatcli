@@ -10,6 +10,7 @@ import {
   getEngineExecutableName,
   getPathModule,
 } from '../utils/paths.js';
+import { getPlatformAdapter } from '../platform.js';
 
 export interface ValidatedEngine {
   resolved: ResolvedEngine;
@@ -36,6 +37,7 @@ export function validateEngine(
 ): ValidatedEngine {
   const fileSystem = options.fs ?? fs;
   const pathModule = getPathModule(resolved.platform);
+  const platform = getPlatformAdapter(resolved.platform);
 
   if (!pathModule.isAbsolute(resolved.executablePath)) {
     throw new EngineContractError(
@@ -83,16 +85,12 @@ export function validateEngine(
     );
   }
 
-  if (resolved.platform === 'darwin') {
-    try {
-      fileSystem.accessSync(resolved.executablePath, fileSystem.constants.X_OK);
-    } catch {
-      throw new EngineContractError(
-        'GOAT_ENGINE_MACOS_NOT_EXECUTABLE',
-        `GOAT engine is not executable: ${resolved.executablePath}`,
-        `Run chmod +x "${resolved.executablePath}", then run goat doctor again.`,
-      );
-    }
+  if (!platform.hasExecutablePermission(resolved.executablePath, fileSystem)) {
+    throw new EngineContractError(
+      'GOAT_ENGINE_MACOS_NOT_EXECUTABLE',
+      `GOAT engine is not executable: ${resolved.executablePath}`,
+      `Run chmod +x "${resolved.executablePath}", then run goat doctor again.`,
+    );
   }
 
   if (resolved.developmentOverride) {

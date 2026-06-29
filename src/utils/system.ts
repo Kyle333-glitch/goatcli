@@ -1,7 +1,13 @@
-import os from 'os';
 import fs from 'fs';
 import path from 'path';
 import { execa } from 'execa';
+import {
+  getPlatformAdapterForPlatform,
+  getRuntimePlatform,
+  getShellForPlatform,
+  hasPathLengthProblem,
+  type PlatformDirectoryOptions,
+} from '../platform.js';
 
 export interface DirectoryStatus {
   path: string;
@@ -36,25 +42,20 @@ export async function getGitVersion(): Promise<string | null> {
   }
 }
 
-export function getShell(): string {
-  if (process.platform === 'win32') {
-    return process.env.COMSPEC || 'cmd.exe';
-  }
-  return process.env.SHELL || '/bin/sh';
+export function getShell(options: PlatformDirectoryOptions = {}): string {
+  return getShellForPlatform(options);
 }
 
 export function checkDirectoryWritable(dirPath: string): DirectoryStatus {
   try {
     const exists = fs.existsSync(dirPath);
     if (!exists) {
-      // Find closest existing parent directory to check writability
       let current = dirPath;
       while (current && !fs.existsSync(current)) {
         const parent = path.dirname(current);
-        if (parent === current) break; // Reached root
+        if (parent === current) break;
         current = parent;
       }
-      // Verify the closest existing parent is a directory, not a file
       if (fs.statSync(current).isDirectory()) {
         fs.accessSync(current, fs.constants.W_OK);
       } else {
@@ -63,25 +64,29 @@ export function checkDirectoryWritable(dirPath: string): DirectoryStatus {
       return { path: dirPath, exists: false, writable: true };
     }
 
-    // Verify the existing path is a directory, not a file
     if (!fs.statSync(dirPath).isDirectory()) {
       return { path: dirPath, exists: true, writable: false, error: 'Path exists but is not a directory' };
     }
     fs.accessSync(dirPath, fs.constants.W_OK);
     return { path: dirPath, exists: true, writable: true };
-  } catch (err: any) {
-    return { path: dirPath, exists: fs.existsSync(dirPath), writable: false, error: err.message };
+  } catch (err) {
+    return {
+      path: dirPath,
+      exists: fs.existsSync(dirPath),
+      writable: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
-export async function getWindowsLongPathsEnabled(): Promise<boolean | null> {
-  if (process.platform !== 'win32') return null;
+export async function getWindowsLongPathsEnabled(platform: NodeJS.Platform = getRuntimePlatform()): Promise<boolean | null> {
+  if (getPlatformAdapterForPlatform(platform)?.platform !== 'win32') return null;
   try {
     const { stdout } = await execa('reg', [
       'query',
       'HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem',
       '/v',
-      'LongPathsEnabled'
+      'LongPathsEnabled',
     ]);
     if (stdout.includes('0x1')) {
       return true;
@@ -92,21 +97,23 @@ export async function getWindowsLongPathsEnabled(): Promise<boolean | null> {
   }
 }
 
-export function checkPathLengthProblems(pathsToCheck: { name: string; path: string }[]): PathLengthStatus[] {
+export function checkPathLengthProblems(
+  pathsToCheck: { name: string; path: string }[],
+  options: { platform?: NodeJS.Platform } = {},
+): PathLengthStatus[] {
+  const platform = options.platform ?? getRuntimePlatform();
   return pathsToCheck.map((p) => {
     const len = p.path.length;
-    // Max path on Windows is typically 260
-    const hasProblem = process.platform === 'win32' && len >= 260;
     return {
       name: p.name,
       path: p.path,
       length: len,
-      hasProblem,
+      hasProblem: hasPathLengthProblem(p.path, platform),
     };
   });
 }
 
-export async function checkMacExecutable(filePath: string): Promise<MacExecutableStatus> {
+export async function checkMacExecutable(filePath: string, platform: NodeJS.Platform = getRuntimePlatform()): Promise<MacExecutableStatus> {
   const status: MacExecutableStatus = {
     exists: false,
     isExecutable: false,
@@ -119,40 +126,33 @@ export async function checkMacExecutable(filePath: string): Promise<MacExecutabl
   }
   status.exists = true;
 
-  // 1. Check executable bit using X_OK (works cross-platform, including macOS)
-  try {
-    fs.accessSync(filePath, fs.constants.X_OK);
-    status.isExecutable = true;
-  } catch {
-    status.isExecutable = false;
-  }
+  const adapter = getPlatformAdapterForPlatform(platform);
+  status.isExecutable = adapter?.hasExecutablePermission(filePath) ?? true;
 
-  if (process.platform !== 'darwin') {
+  if (adapter?.platform !== 'darwin') {
     return status;
   }
 
-  // 2. Check quarantine attribute
   try {
     const { stdout } = await execa('xattr', [filePath]);
-    const attributes = stdout.split('\n').map(x => x.trim()).filter(Boolean);
+    const attributes = stdout.split('\n').map((x) => x.trim()).filter(Boolean);
     status.isQuarantined = attributes.includes('com.apple.quarantine');
-  } catch (err: any) {
-    status.quarantineError = err.message;
+  } catch (err) {
+    status.quarantineError = err instanceof Error ? err.message : String(err);
   }
 
-  // 3. Check code sign status
   try {
     await execa('codesign', ['-v', filePath]);
     status.codeSignValid = true;
-  } catch (err: any) {
+  } catch (err) {
     status.codeSignValid = false;
-    status.codeSignError = err.message;
+    status.codeSignError = err instanceof Error ? err.message : String(err);
   }
 
   return status;
 }
 
-export function checkWindowsPathProblems(): {
+export function checkWindowsPathProblems(platform: NodeJS.Platform = getRuntimePlatform()): {
   npmBinInPath: boolean;
   pathExtHasExe: boolean;
 } {
@@ -161,26 +161,21 @@ export function checkWindowsPathProblems(): {
     pathExtHasExe: true,
   };
 
-  if (process.platform !== 'win32') {
+  if (getPlatformAdapterForPlatform(platform)?.platform !== 'win32') {
     return issues;
   }
 
-  // Check PATHEXT
   const pathext = process.env.PATHEXT || '';
   issues.pathExtHasExe = pathext.toUpperCase().split(';').includes('.EXE');
 
-  // Check npm bin directory in path
   const pathEnv = process.env.PATH || '';
   const paths = pathEnv.split(path.delimiter);
-  
-  // Look for common npm global locations
-  const hasNpmBin = paths.some(p => 
-    p.toLowerCase().includes('npm') || 
-    p.toLowerCase().includes('nodejs') || 
+  issues.npmBinInPath = paths.some((p) =>
+    p.toLowerCase().includes('npm') ||
+    p.toLowerCase().includes('nodejs') ||
     p.toLowerCase().includes('nvm') ||
     p.toLowerCase().includes('yarn')
   );
-  issues.npmBinInPath = hasNpmBin;
 
   return issues;
 }

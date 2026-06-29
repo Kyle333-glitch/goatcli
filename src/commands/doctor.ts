@@ -1,6 +1,6 @@
 import { intro, outro, spinner, note, log } from '@clack/prompts';
 import fs from 'fs';
-import { getAppDataDir, getCacheDir, getEnginePath, getLegacyEngineConfigPath, toResolvedEngine } from '../utils/paths.js';
+import { getAppDataDir, getCacheDir, getConfigDir, getEnginePath, getLegacyEngineConfigPath, toResolvedEngine } from '../utils/paths.js';
 import {
   getGitVersion,
   getShell,
@@ -13,6 +13,7 @@ import {
 import { EngineContractError, formatEngineContractError, type LauncherVersion } from '../engine/contract.js';
 import { validateEngine, type ValidatedEngine } from '../engine/validate.js';
 import { getLauncherVersion } from '../version.js';
+import { getPlatformAdapterForPlatform, getRuntimePlatform, getRuntimeArchitecture } from '../platform.js';
 
 export interface DoctorOptions {
   launcherVersion?: LauncherVersion;
@@ -25,24 +26,28 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
   const s = spinner();
   s.start('Inspecting system environment...');
 
-  const osPlatform = process.platform;
-  const osArch = process.arch;
+  const osPlatform = getRuntimePlatform();
+  const osArch = getRuntimeArchitecture();
   const nodeVersion = process.version;
   const cwd = process.cwd();
-  const shell = getShell();
+  const shell = getShell({ platform: osPlatform });
   const gitVersion = await getGitVersion();
+  const platform = getPlatformAdapterForPlatform(osPlatform);
 
   const engineResolution = getEnginePath();
   const appDataDir = getAppDataDir();
+  const configDir = getConfigDir();
   const cacheDir = getCacheDir();
   const legacyConfigPath = getLegacyEngineConfigPath();
   const legacyConfigExists = fs.existsSync(legacyConfigPath);
 
   const appDataWritable = checkDirectoryWritable(appDataDir);
+  const configWritable = checkDirectoryWritable(configDir);
   const cacheWritable = checkDirectoryWritable(cacheDir);
 
   const pathsToCheck = [
     { name: 'Application Data Directory', path: appDataDir },
+    { name: 'Configuration Directory', path: configDir },
     { name: 'Cache Directory', path: cacheDir },
   ];
   if (engineResolution.path) {
@@ -51,17 +56,17 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
   if (engineResolution.manifestPath) {
     pathsToCheck.push({ name: 'Engine Manifest Path', path: engineResolution.manifestPath });
   }
-  const pathLengthStatuses = checkPathLengthProblems(pathsToCheck);
+  const pathLengthStatuses = checkPathLengthProblems(pathsToCheck, { platform: osPlatform });
 
   let windowsIssues = null;
   let macStatus = null;
   let longPathsEnabled: boolean | null = null;
 
-  if (osPlatform === 'win32') {
-    windowsIssues = checkWindowsPathProblems();
-    longPathsEnabled = await getWindowsLongPathsEnabled();
-  } else if (osPlatform === 'darwin' && engineResolution.path) {
-    macStatus = await checkMacExecutable(engineResolution.path);
+  if (platform?.platform === 'win32') {
+    windowsIssues = checkWindowsPathProblems(osPlatform);
+    longPathsEnabled = await getWindowsLongPathsEnabled(osPlatform);
+  } else if (platform?.platform === 'darwin' && engineResolution.path) {
+    macStatus = await checkMacExecutable(engineResolution.path, osPlatform);
   }
 
   let validatedEngine: ValidatedEngine | null = null;
@@ -95,19 +100,20 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
     ? `${engineResolution.manifestPath} (${validatedEngine?.manifest ? 'valid' : 'not valid'})`
     : engineResolution.source === 'env'
       ? 'not required for legacy GOAT_ENGINE_PATH override'
-    : engineResolution.developmentOverride
-      ? 'not required for GOATCLI_DEV=1 development override'
-      : 'not resolved';
+      : engineResolution.developmentOverride
+        ? 'not required for GOATCLI_DEV=1 development override'
+        : 'not resolved';
   const sourceText = engineResolution.source === 'dev-env'
     ? 'GOAT_DEV_ENGINE_PATH with GOATCLI_DEV=1'
     : engineResolution.source === 'env'
       ? 'GOAT_ENGINE_PATH legacy override'
-    : engineResolution.source === 'local-install'
-      ? 'Local app-data engine install'
-      : 'None';
+      : engineResolution.source === 'local-install'
+        ? 'Local app-data engine install'
+        : 'None';
 
   const pathsContent = [
     `- App Data Dir:     ${appDataDir} (${appDataWritable.writable ? 'writable' : 'read-only'}${appDataWritable.exists ? ', exists' : ', will create'})`,
+    `- Config Dir:       ${configDir} (${configWritable.writable ? 'writable' : 'read-only'}${configWritable.exists ? ', exists' : ', will create'})`,
     `- Cache Dir:        ${cacheDir} (${cacheWritable.writable ? 'writable' : 'read-only'}${cacheWritable.exists ? ', exists' : ', will create'})`,
     `- Engine Path:      ${engineStatusText}`,
     `- Manifest Path:    ${manifestStatusText}`,
@@ -127,6 +133,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
   if (!appDataWritable.writable) {
     errors.push(`Application data directory is not writable: ${appDataWritable.error || 'Permission denied'}`);
   }
+  if (!configWritable.writable) {
+    errors.push(`Configuration directory is not writable: ${configWritable.error || 'Permission denied'}`);
+  }
   if (!cacheWritable.writable) {
     errors.push(`Cache directory is not writable: ${cacheWritable.error || 'Permission denied'}`);
   }
@@ -139,7 +148,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
 
   if (legacyConfigExists) {
     warnings.push(
-      `Legacy ${legacyConfigPath} was found. goatcli v0.0.5 ignores config.json enginePath; use the local engine install path or GOATCLI_DEV=1 with GOAT_DEV_ENGINE_PATH.`,
+      `Legacy ${legacyConfigPath} was found. goatcli v0.0.6 ignores config.json enginePath; use the local engine install path or GOATCLI_DEV=1 with GOAT_DEV_ENGINE_PATH.`,
     );
   }
 
@@ -147,7 +156,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
     errors.push(formatEngineContractError(engineValidationError).replace('\n', ' '));
   }
 
-  if (osPlatform === 'win32') {
+  if (platform?.platform === 'win32') {
     if (longPathsEnabled === false) {
       warnings.push('Windows Registry LongPathsEnabled is disabled. Path operations longer than 260 characters might fail.');
     }
@@ -161,7 +170,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
     }
   }
 
-  if (osPlatform === 'darwin' && engineResolution.path && macStatus) {
+  if (platform?.platform === 'darwin' && engineResolution.path && macStatus) {
     if (macStatus.isQuarantined) {
       warnings.push(`Engine binary is quarantined by macOS Gatekeeper. Run: xattr -d com.apple.quarantine "${engineResolution.path}"`);
     }

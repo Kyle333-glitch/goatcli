@@ -1,6 +1,6 @@
 {
   "name": "goatcli",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "GOAT public npm launcher",
   "main": "dist/index.js",
   "bin": {

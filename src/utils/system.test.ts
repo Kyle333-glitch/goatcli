@@ -20,24 +20,19 @@ test('checkDirectoryWritable reports correctly for current working dir', () => {
   assert.strictEqual(status.writable, true);
 });
 
-test('checkPathLengthProblems identifies long paths', () => {
+test('checkPathLengthProblems identifies long Windows paths through injected platform', () => {
   const normalPath = 'C:\\short\\path';
-  const longPath = 'C:\\' + 'a'.repeat(300);
-  
-  const results = checkPathLengthProblems([
+  const longPath = `C:\\${'a'.repeat(300)}`;
+
+  const windowsResults = checkPathLengthProblems([
     { name: 'Normal', path: normalPath },
     { name: 'Long', path: longPath },
-  ]);
+  ], { platform: 'win32' });
+  const macResults = checkPathLengthProblems([
+    { name: 'Long', path: longPath },
+  ], { platform: 'darwin' });
 
-  const normalResult = results.find(r => r.name === 'Normal');
-  const longResult = results.find(r => r.name === 'Long');
-
-  assert.ok(normalResult);
-  assert.ok(longResult);
-  assert.strictEqual(normalResult.hasProblem, false);
-  if (process.platform === 'win32') {
-    assert.strictEqual(longResult.hasProblem, true);
-  } else {
-    assert.strictEqual(longResult.hasProblem, false);
-  }
+  assert.strictEqual(windowsResults.find((r) => r.name === 'Normal')?.hasProblem, false);
+  assert.strictEqual(windowsResults.find((r) => r.name === 'Long')?.hasProblem, true);
+  assert.strictEqual(macResults[0]?.hasProblem, false);
 });
