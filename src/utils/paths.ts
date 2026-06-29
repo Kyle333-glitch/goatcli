@@ -154,7 +154,7 @@ export function getEnginePath(options: EnginePathOptions = {}): EngineResolution
     }
 
     return {
-      path: pathModule.resolve(devPath),
+      path: devPath,
       manifestPath: null,
       source: 'dev-env',
       releaseChannel: 'dev',
@@ -168,7 +168,7 @@ export function getEnginePath(options: EnginePathOptions = {}): EngineResolution
   const legacyEnginePath = env.GOAT_ENGINE_PATH?.trim();
   if (legacyEnginePath) {
     return {
-      path: pathModule.resolve(legacyEnginePath),
+      path: legacyEnginePath,
       manifestPath: null,
       source: 'env',
       releaseChannel: 'stable',

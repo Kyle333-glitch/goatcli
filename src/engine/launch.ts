@@ -131,7 +131,7 @@ export function launchValidatedEngine(
       settled = true;
       cleanup();
       resolve({
-        exitCode: typeof code === 'number' ? code : 0,
+        exitCode: typeof code === 'number' ? code : 1,
         signal: signal ?? null,
       });
     });

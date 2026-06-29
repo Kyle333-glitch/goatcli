@@ -57,7 +57,7 @@ test('validateEngine does not require a manifest for development override', () =
   );
 
   assert.equal(result.manifest, null);
-  assert.equal(result.checksum, sha256(engineBytes));
+  assert.equal(result.checksum, 'development-override');
 });
 
 test('validateEngine rejects Windows engine paths without .exe', () => {

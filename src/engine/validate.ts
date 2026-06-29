@@ -47,7 +47,7 @@ export function validateEngine(
 
   const expectedExecutableName = getEngineExecutableName(resolved.platform);
   const actualExecutableName = pathModule.basename(resolved.executablePath);
-  if (actualExecutableName !== expectedExecutableName) {
+  if (!resolved.developmentOverride && actualExecutableName !== expectedExecutableName) {
     const code = resolved.platform === 'win32' ? 'GOAT_ENGINE_WINDOWS_EXTENSION' : 'GOAT_ENGINE_MISSING';
     throw new EngineContractError(
       code,
@@ -95,9 +95,19 @@ export function validateEngine(
     }
   }
 
-  const checksum = sha256(fileSystem.readFileSync(resolved.executablePath));
   if (resolved.developmentOverride) {
-    return { resolved, manifest: null, checksum };
+    return { resolved, manifest: null, checksum: 'development-override' };
+  }
+
+  let checksum: string;
+  try {
+    checksum = sha256(fileSystem.readFileSync(resolved.executablePath));
+  } catch {
+    throw new EngineContractError(
+      'GOAT_ENGINE_MISSING',
+      `GOAT engine executable could not be read at ${resolved.executablePath}.`,
+      'Check that the file exists and is readable, then run goat doctor.',
+    );
   }
 
   if (!resolved.manifestPath || !fileSystem.existsSync(resolved.manifestPath)) {
@@ -271,7 +281,29 @@ function compareVersions(left: string, right: string): number {
   if (leftParts.preRelease === rightParts.preRelease) return 0;
   if (!leftParts.preRelease) return 1;
   if (!rightParts.preRelease) return -1;
-  return leftParts.preRelease.localeCompare(rightParts.preRelease);
+
+  const leftArr = leftParts.preRelease.split('.');
+  const rightArr = rightParts.preRelease.split('.');
+  const maxLength = Math.max(leftArr.length, rightArr.length);
+  for (let i = 0; i < maxLength; i += 1) {
+    const l = leftArr[i];
+    const r = rightArr[i];
+    if (l === undefined) return -1;
+    if (r === undefined) return 1;
+    if (l === r) continue;
+    const lNum = Number(l);
+    const rNum = Number(r);
+    const lIsNum = !isNaN(lNum) && /^\d+$/.test(l);
+    const rIsNum = !isNaN(rNum) && /^\d+$/.test(r);
+    if (lIsNum && rIsNum) {
+      return lNum - rNum > 0 ? 1 : -1;
+    }
+    if (lIsNum && !rIsNum) return -1;
+    if (!lIsNum && rIsNum) return 1;
+    const comp = l.localeCompare(r);
+    if (comp !== 0) return comp > 0 ? 1 : -1;
+  }
+  return 0;
 }
 
 function parseVersion(version: string): { version: [number, number, number]; preRelease: string | null } {

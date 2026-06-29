@@ -165,7 +165,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
     if (macStatus.isQuarantined) {
       warnings.push(`Engine binary is quarantined by macOS Gatekeeper. Run: xattr -d com.apple.quarantine "${engineResolution.path}"`);
     }
-    if (!macStatus.codeSignValid) {
+    if (macStatus.exists && !macStatus.codeSignValid) {
       warnings.push('Engine binary signature verification failed. The binary may be unsigned or modified.');
     }
   }

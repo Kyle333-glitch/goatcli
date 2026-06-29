@@ -114,7 +114,7 @@ test('launchValidatedEngine propagates child termination signal', async () => {
   child.emit('exit', null, 'SIGTERM');
   const result = await resultPromise;
 
-  assert.deepEqual(result, { exitCode: 0, signal: 'SIGTERM' });
+  assert.deepEqual(result, { exitCode: 1, signal: 'SIGTERM' });
 });
 
 test('launchEngine reports spawn failures with stable error code', async () => {
