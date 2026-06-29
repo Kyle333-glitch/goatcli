@@ -55,9 +55,17 @@ export function getEnginePath(): EngineResolution {
     if (fs.existsSync(configPath)) {
       const configRaw = fs.readFileSync(configPath, 'utf-8');
       const config = JSON.parse(configRaw);
-      if (config && typeof config.enginePath === 'string') {
+      // Validate to prevent prototype pollution
+      if (
+        config &&
+        typeof config === 'object' &&
+        !Array.isArray(config) &&
+        Object.getPrototypeOf(config) === Object.prototype &&
+        typeof config.enginePath === 'string'
+      ) {
+        // Resolve relative paths against the config directory for deterministic behavior
         return {
-          path: path.resolve(config.enginePath),
+          path: path.resolve(appDataDir, config.enginePath),
           source: 'config',
         };
       }

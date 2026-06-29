@@ -48,4 +48,4 @@ program
   });
 
 // Parse command line arguments
-program.parse(process.argv);
+await program.parseAsync(process.argv);

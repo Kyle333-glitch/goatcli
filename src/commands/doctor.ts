@@ -62,7 +62,12 @@ export async function runDoctor(): Promise<void> {
   // 6. Check engine executable status
   let engineExists = false;
   if (engineResolution.path) {
-    engineExists = fs.existsSync(engineResolution.path);
+    try {
+      const stats = fs.statSync(engineResolution.path);
+      engineExists = stats.isFile();
+    } catch {
+      engineExists = false;
+    }
   }
 
   s.stop('Diagnostics completed.');

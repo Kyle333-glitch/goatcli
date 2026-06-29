@@ -54,10 +54,19 @@ export function checkDirectoryWritable(dirPath: string): DirectoryStatus {
         if (parent === current) break; // Reached root
         current = parent;
       }
-      fs.accessSync(current, fs.constants.W_OK);
+      // Verify the closest existing parent is a directory, not a file
+      if (fs.statSync(current).isDirectory()) {
+        fs.accessSync(current, fs.constants.W_OK);
+      } else {
+        return { path: dirPath, exists: false, writable: false, error: 'Closest existing parent is a file, not a directory' };
+      }
       return { path: dirPath, exists: false, writable: true };
     }
 
+    // Verify the existing path is a directory, not a file
+    if (!fs.statSync(dirPath).isDirectory()) {
+      return { path: dirPath, exists: true, writable: false, error: 'Path exists but is not a directory' };
+    }
     fs.accessSync(dirPath, fs.constants.W_OK);
     return { path: dirPath, exists: true, writable: true };
   } catch (err: any) {
@@ -110,11 +119,10 @@ export async function checkMacExecutable(filePath: string): Promise<MacExecutabl
   }
   status.exists = true;
 
-  // 1. Check executable bit
+  // 1. Check executable bit using X_OK (works cross-platform, including macOS)
   try {
-    const stats = fs.statSync(filePath);
-    status.mode = stats.mode;
-    status.isExecutable = (stats.mode & fs.constants.S_IXUSR) !== 0;
+    fs.accessSync(filePath, fs.constants.X_OK);
+    status.isExecutable = true;
   } catch {
     status.isExecutable = false;
   }
@@ -147,12 +155,10 @@ export async function checkMacExecutable(filePath: string): Promise<MacExecutabl
 export function checkWindowsPathProblems(): {
   npmBinInPath: boolean;
   pathExtHasExe: boolean;
-  engineHasSpaces: boolean;
 } {
   const issues = {
     npmBinInPath: true,
     pathExtHasExe: true,
-    engineHasSpaces: false,
   };
 
   if (process.platform !== 'win32') {
@@ -165,7 +171,7 @@ export function checkWindowsPathProblems(): {
 
   // Check npm bin directory in path
   const pathEnv = process.env.PATH || '';
-  const paths = pathEnv.split(';');
+  const paths = pathEnv.split(path.delimiter);
   
   // Look for common npm global locations
   const hasNpmBin = paths.some(p => 
