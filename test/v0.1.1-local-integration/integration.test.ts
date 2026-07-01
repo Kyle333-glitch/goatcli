@@ -36,8 +36,8 @@ function makeManifest(checksum: string, platform: NodeJS.Platform, arch: string)
 }
 
 function prepareFakeEngine(installRoot: string) {
-  const platform = process.platform as 'win32' | 'darwin';
-  const arch = process.arch as 'x64' | 'arm64';
+  const platform = process.platform;
+  const arch = process.arch;
 
   // For dev-env mode (GOATCLI_DEV=1), GOAT_DEV_ENGINE_PATH points directly
   // to the engine executable. We use the current Node executable as a fake
@@ -78,12 +78,13 @@ async function collect(child: ReturnType<typeof spawn>) {
   let stderr = '';
   child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
   child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-  const exitCode = await new Promise<number>((resolve) => {
+  const exitCode = await new Promise<number>((resolve, reject) => {
     if (child.exitCode !== null) {
       resolve(child.exitCode);
       return;
     }
-    child.on('exit', (code) => resolve(typeof code === 'number' ? code : 1));
+    child.on('close', (code) => resolve(typeof code === 'number' ? code : 1));
+    child.on('error', reject);
   });
   return { exitCode, stdout, stderr };
 }
@@ -177,12 +178,19 @@ test('cancellation interrupts an active engine and child exits', async () => {
     const { enginePath } = prepareFakeEngine(tmpDir);
 
     const child = runLauncher(
-      ['-e', 'setInterval(() => {}, 1000)'],
+      ['-e', 'console.log("ready"); setInterval(() => {}, 1000)'],
       { devEnginePath: enginePath },
     );
 
-    // Give the child a moment to start
-    await new Promise((r) => setTimeout(r, 500));
+    // Wait for the child to signal readiness before sending SIGINT
+    await new Promise<void>((resolve) => {
+      child.stdout?.on('data', function listener(chunk: Buffer) {
+        if (chunk.toString().includes('ready')) {
+          child.stdout?.off('data', listener);
+          resolve();
+        }
+      });
+    });
     child.kill('SIGINT');
 
     const { exitCode } = await collect(child);

@@ -14,7 +14,6 @@ concurrency:
 
 permissions:
   contents: read
-  checks: write
 
 jobs:
   test:
@@ -34,10 +33,10 @@ jobs:
           node-version: "22"
 
       - name: Install dependencies
-        run: npm install
-
-      - name: Run tests
-        run: npm test
+        run: npm ci
 
       - name: Build
         run: npm run build
+
+      - name: Run tests
+        run: npm test
