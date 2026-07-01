@@ -9,7 +9,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "test": "node --import tsx --test \"src/**/*.test.ts\""
+    "test": "npm run build && node --import tsx --test \"src/**/*.test.ts\" \"test/**/*.test.ts\""
   },
   "private": true,
   "dependencies": {
