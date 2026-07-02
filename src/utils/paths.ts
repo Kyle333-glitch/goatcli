@@ -5,6 +5,7 @@ import {
   type ReleaseChannel,
   type ResolvedEngine,
 } from '../engine/contract.js';
+import { FALLBACK_LAUNCHER_VERSION } from '../version.js';
 import {
   getEngineExecutableName,
   getPathModule,
@@ -86,7 +87,7 @@ export function getEnginePath(options: EnginePathOptions = {}): EngineResolution
       architecture,
       new EngineContractError(
         'GOAT_UNSUPPORTED_PLATFORM',
-        `GOAT supports Windows and macOS for v0.0.6, but this platform is ${rawPlatform}.`,
+        `GOAT supports Windows and macOS for v${FALLBACK_LAUNCHER_VERSION}, but this platform is ${rawPlatform}.`,
         'Run GOAT on Windows or macOS, or install a launcher version that supports this platform.',
       ),
     );
@@ -99,7 +100,7 @@ export function getEnginePath(options: EnginePathOptions = {}): EngineResolution
       null,
       new EngineContractError(
         'GOAT_UNSUPPORTED_ARCHITECTURE',
-        `GOAT supports x64 and arm64 for v0.0.6, but this architecture is ${rawArchitecture}.`,
+        `GOAT supports x64 and arm64 for v${FALLBACK_LAUNCHER_VERSION}, but this architecture is ${rawArchitecture}.`,
         'Use an x64 or arm64 Windows/macOS machine, or install a compatible launcher version.',
       ),
     );

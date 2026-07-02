@@ -3,7 +3,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import type { LauncherVersion } from './engine/contract.js';
 
-export const FALLBACK_LAUNCHER_VERSION: LauncherVersion = '0.0.6';
+export const FALLBACK_LAUNCHER_VERSION: LauncherVersion = '0.0.7';
+export const ENGINE_CONTRACT_VERSION: LauncherVersion = '0.0.6';
 
 export function getLauncherVersion(): LauncherVersion {
   const filename = fileURLToPath(import.meta.url);
@@ -16,4 +17,8 @@ export function getLauncherVersion(): LauncherVersion {
   } catch {
     return FALLBACK_LAUNCHER_VERSION;
   }
+}
+
+export function getEngineContractVersion(): LauncherVersion {
+  return ENGINE_CONTRACT_VERSION;
 }

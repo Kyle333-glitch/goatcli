@@ -248,6 +248,16 @@ function validateManifestAgainstResolution(
   }
 }
 
+export function computeFileChecksum(filePath: string): { ok: true; checksum: string } | { ok: false; error: string } {
+  try {
+    const content = fs.readFileSync(filePath);
+    return { ok: true, checksum: sha256(content) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: message };
+  }
+}
+
 function sha256(input: Buffer | string): string {
   return createHash('sha256').update(input).digest('hex');
 }

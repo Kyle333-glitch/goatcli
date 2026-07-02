@@ -48,7 +48,8 @@ export type EngineErrorCode =
   | 'GOAT_ENGINE_MANIFEST_INVALID'
   | 'GOAT_ENGINE_CHECKSUM_MISMATCH'
   | 'GOAT_ENGINE_INCOMPATIBLE'
-  | 'GOAT_ENGINE_SPAWN_FAILED';
+  | 'GOAT_ENGINE_SPAWN_FAILED'
+  | 'GOAT_ENGINE_ARGS_TOO_LONG';
 
 export class EngineContractError extends Error {
   readonly code: EngineErrorCode;
