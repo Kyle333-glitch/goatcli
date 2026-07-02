@@ -71,12 +71,13 @@ export function createCredentialStore(options: CredentialStoreOptions = {}): Cre
       const serialized = JSON.stringify(credentials);
       try {
         await keyring.setPassword(SERVICE, ACCOUNT, serialized);
-        await fs.rm(filePath, { force: true });
-        return;
       } catch {
         if (!allowFallback) throw new Error('Unable to write GOAT credentials to the OS credential store.');
+        await writeFallback(credentials);
+        return;
       }
-      await writeFallback(credentials);
+      // Keyring write succeeded; best-effort removal of any stale fallback file.
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
     },
     async delete() {
       try {
@@ -94,15 +95,21 @@ export async function refreshStoredCredentials(client: { refresh(refreshToken: s
   if (!current) return null;
   const result = await client.refresh(current.refreshToken);
   if (result.status !== 'authorized' || !result.credentials) {
-    if (result.status === 'invalid_grant' || result.status === 'revoked') await store.delete();
+    if (
+      result.status === 'invalid_grant' ||
+      result.status === 'revoked' ||
+      result.status === 'replay_detected' ||
+      result.status === 'expired'
+    ) {
+      await store.delete();
+    }
     return null;
   }
   try {
     await store.set(result.credentials);
-  } catch (error) {
+  } catch {
     // Preserve existing credentials if the write fails;
-    // the old tokens are still valid until they expire.
-    throw error;
+    // the new tokens are still valid and the old ones remain usable until they expire.
   }
   return result.credentials;
 }
@@ -115,7 +122,8 @@ function parseCredentials(raw: string): GoatCredentials | null {
       parsed.accessToken.length >= 32 &&
       typeof parsed.refreshToken === 'string' &&
       parsed.refreshToken.length >= 32 &&
-      parsed.tokenType === 'Bearer' &&
+      parsed.tokenType != null &&
+      String(parsed.tokenType).toLowerCase() === 'bearer' &&
       typeof parsed.accessTokenExpiresAt === 'string' &&
       typeof parsed.refreshTokenExpiresAt === 'string' &&
       !isNaN(Date.parse(parsed.accessTokenExpiresAt)) &&
@@ -179,7 +187,7 @@ function hardenWindowsAcl(filePath: string): boolean {
     // Validate username contains only safe characters for icacls.
     // Domain users may appear as DOMAIN\User or user@domain.tld;
     // spawnSync runs without shell:true, so \ and @ are not injection risks.
-    if (!/^[a-zA-Z0-9._\- @\\]+$/.test(user)) {
+    if (!/^[\p{L}\p{N}._\- @\\]+$/u.test(user)) {
       return false;
     }
     const disableInheritance = spawnSync('icacls', [filePath, '/inheritance:r'], { stdio: 'ignore', windowsHide: true });

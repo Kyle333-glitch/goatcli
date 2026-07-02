@@ -71,6 +71,7 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
     } catch (error) {
       stderr.write(`GOAT login error: ${errorMessage(error)}\n`);
       exit(1);
+      return;
     }
   }
 

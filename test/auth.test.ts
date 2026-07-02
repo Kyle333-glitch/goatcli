@@ -89,6 +89,7 @@ test('goat logout deletes local credentials even when server revocation fails', 
   assert.equal(exitCode, 1);
   assert.equal(await store.get(), null);
   assert.match(stderr, /server unreachable/);
+  assert.match(output, /Removed local GOAT credentials, but server session revocation failed/);
 });
 
 test('auth client treats failed token revocation as logout failure', async () => {
@@ -125,7 +126,8 @@ test('browser opener allowlists safe control-plane URLs', async () => {
 
   assert.equal(await opener.open('https://control.example.com/auth/device'), true);
   assert.equal(await opener.open('file:///C:/secrets'), false);
-  assert.equal(calls[0]?.command, 'explorer.exe');
+  const expectedCommand = `${process.env.SystemRoot ?? 'C:\\Windows'}\\explorer.exe`;
+  assert.equal(calls[0]?.command, expectedCommand);
   assert.deepEqual(calls[0]?.args, ['https://control.example.com/auth/device']);
 });
 
@@ -140,6 +142,41 @@ test('refreshStoredCredentials atomically replaces tokens and deletes stale loca
   const replay = await refreshStoredCredentials({ refresh: async () => ({ status: 'invalid_grant', message: 'replay' }) }, store);
   assert.equal(replay, null);
   assert.equal(await store.get(), null);
+});
+
+test('pollDeviceToken returns network_error on fetch exception instead of throwing', async () => {
+  const client = createAuthApiClient(new URL('https://control.example.com'), async () => {
+    throw new Error('fetch failed');
+  });
+
+  const result = await client.pollDeviceToken('test-code');
+  assert.equal(result.status, 'network_error');
+  assert.equal(typeof result.message, 'string');
+});
+
+test('runLogin retries on network_error and eventually succeeds', async () => {
+  let output = '';
+  const store = new MemoryCredentialStore();
+  const client = new FakeAuthClient([
+    { status: 'network_error', message: 'fetch failed' },
+    { status: 'pending', intervalSeconds: 5 },
+    { status: 'authorized', credentials },
+  ]);
+
+  await runCli({
+    argv: ['login'],
+    authClient: client,
+    credentialStore: store,
+    browserOpener: { open: async () => false },
+    clock: { sleep: async () => {} },
+    stdout: writer((chunk) => { output += chunk; }),
+    spawnEngine: () => {
+      throw new Error('login should not spawn engine');
+    },
+  });
+
+  assert.match(output, /GOAT login complete/);
+  assert.equal((await store.get())?.refreshToken, 'refresh-token');
 });
 
 test('Windows fallback does not publish credential bytes when ACL hardening fails', async () => {

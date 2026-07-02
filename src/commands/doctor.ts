@@ -119,7 +119,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
   const cliEntryPath = process.argv[1] || process.execPath;
   const cliChecksum = computeFileChecksum(cliEntryPath);
   const configChecksums: { name: string; checksum: string | null }[] = [];
-  if (fs.existsSync(configDir)) {
+  if (fs.existsSync(configDir) && fs.statSync(configDir).isDirectory()) {
     for (const entry of fs.readdirSync(configDir, { withFileTypes: true })) {
       if (entry.isFile() && KNOWN_CONFIG_FILES.has(entry.name)) {
         const filePath = path.join(configDir, entry.name);

@@ -63,12 +63,18 @@ async function handlePollResult(
   deadline: number,
 ): Promise<{ done: true; exitCode: number } | { done: false; intervalSeconds?: number }> {
   if (result.status === 'authorized') {
-    await options.store.set(result.credentials);
+    try {
+      await options.store.set(result.credentials);
+    } catch (error) {
+      options.stderr.write(`Failed to store credentials: ${error instanceof Error ? error.message : String(error)}\n`);
+      return { done: true, exitCode: 1 };
+    }
     options.stdout.write('GOAT login complete.\n');
     return { done: true, exitCode: 0 };
   }
   if (result.status === 'pending') {
-    const sleepMs = Math.min((result.intervalSeconds ?? intervalSeconds) * 1000, Math.max(0, deadline - Date.now()));
+    const effectiveInterval = clampInterval(result.intervalSeconds ?? intervalSeconds);
+    const sleepMs = Math.min(effectiveInterval * 1000, Math.max(0, deadline - Date.now()));
     if (sleepMs > 0) await clock.sleep(sleepMs);
     return { done: false, intervalSeconds: result.intervalSeconds };
   }

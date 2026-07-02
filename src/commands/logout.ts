@@ -26,7 +26,13 @@ export async function runLogout(options: LogoutOptions): Promise<number> {
   }
 
   await options.store.delete();
-  options.stdout.write(options.localOnly ? 'Removed local GOAT credentials.\n' : 'GOAT logout complete.\n');
+  if (options.localOnly) {
+    options.stdout.write('Removed local GOAT credentials.\n');
+  } else if (serverRevoked) {
+    options.stdout.write('GOAT logout complete.\n');
+  } else {
+    options.stdout.write('Removed local GOAT credentials, but server session revocation failed.\n');
+  }
   return serverRevoked ? 0 : 1;
 }
 

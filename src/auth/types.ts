@@ -1,7 +1,7 @@
 export interface GoatCredentials {
   accessToken: string;
   refreshToken: string;
-  tokenType: "Bearer";
+  tokenType: string;
   accessTokenExpiresAt: string;
   refreshTokenExpiresAt: string;
 }

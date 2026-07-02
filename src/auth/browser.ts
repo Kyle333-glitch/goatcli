@@ -11,7 +11,11 @@ export function createBrowserOpener(platform: NodeJS.Platform = process.platform
     async open(url) {
       const parsed = new URL(url);
       if (!isAllowedControlPlaneUrl(parsed)) return false;
-      const command = platform === 'win32' ? 'explorer.exe' : platform === 'darwin' ? 'open' : null;
+      const command =
+        platform === 'win32' ? `${process.env.SystemRoot ?? 'C:\\Windows'}\\explorer.exe` :
+        platform === 'darwin' ? '/usr/bin/open' :
+        platform === 'linux' || platform === 'freebsd' ? 'xdg-open' :
+        null;
       if (!command) return false;
       try {
         const child = spawnImpl(command, [parsed.toString()], { detached: true, stdio: 'ignore', windowsHide: true });
