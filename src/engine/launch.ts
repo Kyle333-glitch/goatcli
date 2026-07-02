@@ -43,6 +43,8 @@ export interface ProcessLike {
   removeListener(event: string | symbol, listener: (...args: unknown[]) => void): unknown;
 }
 
+const MAX_TOTAL_ARG_LENGTH = 100_000;
+
 export interface LaunchEngineOptions extends EnginePathOptions, ValidateEngineOptions {
   launcherVersion: LauncherVersion;
   args: readonly string[];
@@ -54,6 +56,15 @@ export interface LaunchEngineOptions extends EnginePathOptions, ValidateEngineOp
 }
 
 export async function launchEngine(options: LaunchEngineOptions): Promise<EngineLaunchResult> {
+  const totalArgLength = options.args.reduce((sum, arg) => sum + arg.length, 0);
+  if (totalArgLength > MAX_TOTAL_ARG_LENGTH) {
+    throw new EngineContractError(
+      'GOAT_ENGINE_ARGS_TOO_LONG',
+      `Engine arguments exceed maximum total length of ${MAX_TOTAL_ARG_LENGTH} characters (got ${totalArgLength}).`,
+      'Reduce the number or length of arguments passed to the GOAT engine.',
+    );
+  }
+
   const processLike = options.processLike ?? process;
   const cwd = options.cwd ?? processLike.cwd();
   const spawnEngine = options.spawnEngine ?? spawn;

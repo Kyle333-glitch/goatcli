@@ -1,5 +1,6 @@
 import { intro, outro, spinner, note, log } from '@clack/prompts';
 import fs from 'fs';
+import path from 'path';
 import { getAppDataDir, getCacheDir, getConfigDir, getEnginePath, getLegacyEngineConfigPath, toResolvedEngine } from '../utils/paths.js';
 import {
   getGitVersion,
@@ -11,16 +12,18 @@ import {
   checkWindowsPathProblems,
 } from '../utils/system.js';
 import { EngineContractError, formatEngineContractError, type LauncherVersion } from '../engine/contract.js';
-import { validateEngine, type ValidatedEngine } from '../engine/validate.js';
-import { getLauncherVersion } from '../version.js';
+import { validateEngine, computeFileChecksum, type ValidatedEngine } from '../engine/validate.js';
+import { getEngineContractVersion, getLauncherVersion } from '../version.js';
 import { getPlatformAdapterForPlatform, getRuntimePlatform, getRuntimeArchitecture } from '../platform.js';
 
 export interface DoctorOptions {
   launcherVersion?: LauncherVersion;
+  engineContractVersion?: LauncherVersion;
 }
 
 export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
   const launcherVersion = options.launcherVersion ?? getLauncherVersion();
+  const engineContractVersion = options.engineContractVersion ?? getEngineContractVersion();
   intro('GOAT System Diagnostics (Doctor)');
 
   const s = spinner();
@@ -72,7 +75,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
   let validatedEngine: ValidatedEngine | null = null;
   let engineValidationError: EngineContractError | null = null;
   try {
-    validatedEngine = validateEngine(toResolvedEngine(engineResolution), launcherVersion);
+    validatedEngine = validateEngine(toResolvedEngine(engineResolution), engineContractVersion);
   } catch (error) {
     if (error instanceof EngineContractError) {
       engineValidationError = error;
@@ -87,6 +90,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
     `- OS & Arch:       ${osPlatform} (${osArch})`,
     `- Node.js Version:  ${nodeVersion}`,
     `- GOAT CLI Version: ${launcherVersion}`,
+    `- Engine Contract:   ${engineContractVersion}`,
     `- Git Version:      ${gitVersion ? gitVersion : 'NOT FOUND (Git is required for many features)'}`,
     `- Shell:            ${shell}`,
     `- Working Dir:      ${cwd}`,
@@ -111,15 +115,36 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
         ? 'Local app-data engine install'
         : 'None';
 
+  const KNOWN_CONFIG_FILES = new Set(['config.json', 'settings.json']);
+  const cliEntryPath = process.argv[1] || process.execPath;
+  const cliChecksum = computeFileChecksum(cliEntryPath);
+  const configChecksums: { name: string; checksum: string | null }[] = [];
+  if (fs.existsSync(configDir)) {
+    for (const entry of fs.readdirSync(configDir, { withFileTypes: true })) {
+      if (entry.isFile() && KNOWN_CONFIG_FILES.has(entry.name)) {
+        const filePath = path.join(configDir, entry.name);
+        const result = computeFileChecksum(filePath);
+        configChecksums.push({
+          name: entry.name,
+          checksum: result.ok ? result.checksum : null,
+        });
+      }
+    }
+  }
+
   const pathsContent = [
-    `- App Data Dir:     ${appDataDir} (${appDataWritable.writable ? 'writable' : 'read-only'}${appDataWritable.exists ? ', exists' : ', will create'})`,
-    `- Config Dir:       ${configDir} (${configWritable.writable ? 'writable' : 'read-only'}${configWritable.exists ? ', exists' : ', will create'})`,
-    `- Cache Dir:        ${cacheDir} (${cacheWritable.writable ? 'writable' : 'read-only'}${cacheWritable.exists ? ', exists' : ', will create'})`,
-    `- Engine Path:      ${engineStatusText}`,
-    `- Manifest Path:    ${manifestStatusText}`,
-    `- Path Source:      ${sourceText}`,
-    `- Release Channel:  ${engineResolution.releaseChannel}`,
-    `- Engine Checksum:  ${validatedEngine?.checksum ?? 'not available'}`,
+    `- App Data Dir:      ${appDataDir} (${appDataWritable.writable ? 'writable' : 'read-only'}${appDataWritable.exists ? ', exists' : ', will create'})`,
+    `- Config Dir:        ${configDir} (${configWritable.writable ? 'writable' : 'read-only'}${configWritable.exists ? ', exists' : ', will create'})`,
+    `- Cache Dir:         ${cacheDir} (${cacheWritable.writable ? 'writable' : 'read-only'}${cacheWritable.exists ? ', exists' : ', will create'})`,
+    `- Engine Path:       ${engineStatusText}`,
+    `- Manifest Path:     ${manifestStatusText}`,
+    `- Path Source:       ${sourceText}`,
+    `- Release Channel:   ${engineResolution.releaseChannel}`,
+    `- Engine Checksum:   ${validatedEngine?.checksum ?? 'not available'}`,
+    `- CLI Checksum:      ${cliChecksum.ok ? cliChecksum.checksum : `error: ${cliChecksum.error}`}`,
+    ...(configChecksums.length > 0
+      ? [`- Config Checksums:  ${configChecksums.map((c) => `${c.name}: ${c.checksum ?? 'error'}`).join(', ')}`]
+      : []),
   ].join('\n');
   note(pathsContent, 'GOAT Configuration & Engine Contract');
 
@@ -148,7 +173,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
 
   if (legacyConfigExists) {
     warnings.push(
-      `Legacy ${legacyConfigPath} was found. goatcli v0.0.6 ignores config.json enginePath; use the local engine install path or GOATCLI_DEV=1 with GOAT_DEV_ENGINE_PATH.`,
+      `Legacy ${legacyConfigPath} was found. goatcli ignores config.json enginePath; use the local engine install path or GOATCLI_DEV=1 with GOAT_DEV_ENGINE_PATH.`,
     );
   }
 

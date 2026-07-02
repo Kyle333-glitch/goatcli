@@ -25,7 +25,7 @@ test('runCli handles exact launcher-owned version command', async () => {
     },
   });
 
-  assert.equal(output, '0.0.6\n');
+  assert.equal(output, '0.0.7\n');
 });
 
 test('runCli handles version command with trailing arguments', async () => {
@@ -44,7 +44,7 @@ test('runCli handles version command with trailing arguments', async () => {
     },
   });
 
-  assert.equal(output, '0.0.6\n');
+  assert.equal(output, '0.0.7\n');
 });
 
 test('runCli forwards non-launcher-owned arguments to the engine unchanged', async () => {
