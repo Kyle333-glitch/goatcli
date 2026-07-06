@@ -85,7 +85,27 @@ test('getEnginePath preserves legacy GOAT_ENGINE_PATH override', () => {
   assert.equal(result.manifestPath, null);
 });
 
-test('getEnginePath reports unsupported platforms explicitly', () => {
+test('getEnginePath accepts gated GOAT_DEV_ENGINE_PATH on unsupported platforms (Linux dev mode)', () => {
+  const result = getEnginePath({
+    platform: 'linux',
+    architecture: 'x64',
+    env: {
+      GOATCLI_DEV: '1',
+      GOAT_DEV_ENGINE_PATH: '/usr/local/bin/node',
+    },
+  });
+
+  assert.equal(result.error, null);
+  assert.equal(result.source, 'dev-env');
+  assert.equal(result.releaseChannel, 'dev');
+  assert.equal(result.developmentOverride, true);
+  assert.equal(result.path, '/usr/local/bin/node');
+  assert.equal(result.platform, 'darwin');
+  assert.equal(result.architecture, 'x64');
+  assert.equal(result.manifestPath, null);
+});
+
+test('getEnginePath reports unsupported platforms explicitly (without dev override)', () => {
   const result = getEnginePath({
     platform: 'linux',
     architecture: 'x64',

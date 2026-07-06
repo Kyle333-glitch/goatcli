@@ -80,6 +80,40 @@ export function getEnginePath(options: EnginePathOptions = {}): EngineResolution
   const platform = getSupportedPlatform(rawPlatform);
   const architecture = getSupportedArchitecture(rawArchitecture);
 
+  // Dev-mode override: checked before platform/arch validation so
+  // development on unsupported platforms (e.g. Linux) is possible.
+  const devPath = env.GOAT_DEV_ENGINE_PATH?.trim();
+  if (devPath) {
+    if (env.GOATCLI_DEV !== '1') {
+      return noneResolution(
+        'dev',
+        platform,
+        architecture,
+        new EngineContractError(
+          'GOAT_DEV_ENGINE_PATH_DISABLED',
+          'GOAT_DEV_ENGINE_PATH is set, but GOATCLI_DEV=1 is not set.',
+          'Set GOATCLI_DEV=1 for local launcher development, or unset GOAT_DEV_ENGINE_PATH for production launch.',
+        ),
+      );
+    }
+
+    // In dev mode, fall back to darwin/x64 for unsupported platforms/archs
+    // so development and CI can run on Linux.
+    const effectivePlatform = platform ?? 'darwin';
+    const effectiveArch = architecture ?? 'x64';
+
+    return {
+      path: devPath,
+      manifestPath: null,
+      source: 'dev-env',
+      releaseChannel: 'dev',
+      platform: effectivePlatform,
+      architecture: effectiveArch,
+      developmentOverride: true,
+      error: null,
+    };
+  }
+
   if (!platform) {
     return noneResolution(
       'stable',
@@ -107,32 +141,6 @@ export function getEnginePath(options: EnginePathOptions = {}): EngineResolution
   }
 
   const pathModule = getPathModule(platform);
-  const devPath = env.GOAT_DEV_ENGINE_PATH?.trim();
-  if (devPath) {
-    if (env.GOATCLI_DEV !== '1') {
-      return noneResolution(
-        'dev',
-        platform,
-        architecture,
-        new EngineContractError(
-          'GOAT_DEV_ENGINE_PATH_DISABLED',
-          'GOAT_DEV_ENGINE_PATH is set, but GOATCLI_DEV=1 is not set.',
-          'Set GOATCLI_DEV=1 for local launcher development, or unset GOAT_DEV_ENGINE_PATH for production launch.',
-        ),
-      );
-    }
-
-    return {
-      path: devPath,
-      manifestPath: null,
-      source: 'dev-env',
-      releaseChannel: 'dev',
-      platform,
-      architecture,
-      developmentOverride: true,
-      error: null,
-    };
-  }
 
   const legacyEnginePath = env.GOAT_ENGINE_PATH?.trim();
   if (legacyEnginePath) {

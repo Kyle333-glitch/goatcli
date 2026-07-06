@@ -6,6 +6,7 @@ import type { AuthApiClient, BrowserOpener, Clock, CredentialStore } from './aut
 import { runDoctor } from './commands/doctor.js';
 import { runLogin } from './commands/login.js';
 import { runLogout } from './commands/logout.js';
+import { runUsage } from './commands/usage.js';
 import {
   EngineContractError,
   formatEngineContractError,
@@ -93,6 +94,27 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
     }
   }
 
+  if (firstArg === 'usage') {
+    const json = argv.includes('--json');
+    try {
+      const code = await runUsage({
+        client: options.authClient ?? createAuthApiClient(resolveControlPlaneUrl(env)),
+        store: options.credentialStore ?? createCredentialStore({ env }),
+        stdout,
+        stderr,
+        json,
+        now: options.clock?.now ? () => options.clock!.now!() : undefined,
+      });
+      if (code !== 0) exit(code);
+      return;
+    } catch {
+      const usageError = { code: 'unavailable', message: 'Unable to load GOAT usage right now. Try again later.' };
+      if (json) stdout.write(`${JSON.stringify({ ok: false, error: usageError })}\n`);
+      else stderr.write(`${usageError.message}\n`);
+      exit(1);
+      return;
+    }
+  }
   let result: EngineLaunchResult | undefined;
   try {
     result = await launchEngine({
@@ -141,6 +163,9 @@ function noopAuthClient(): AuthApiClient {
       return { status: 'network_error', message: 'No control plane configured.' };
     },
     async revoke() {},
+    async getUsageSummary() {
+      return { status: 'network_error', message: 'No control plane configured.' };
+    },
   };
 }
 
