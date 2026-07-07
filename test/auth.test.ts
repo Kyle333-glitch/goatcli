@@ -7,7 +7,7 @@ import { runCli } from '../src/cli.js';
 import { createBrowserOpener } from '../src/auth/browser.js';
 import { createAuthApiClient } from '../src/auth/client.js';
 import { createCredentialStore, refreshStoredCredentials } from '../src/auth/credentials.js';
-import type { AuthApiClient, CredentialStore, GoatCredentials } from '../src/auth/types.js';
+import type { AuthApiClient, CredentialStore, GoatCredentials, UsageSummaryResponse, UsageSummaryResult } from '../src/auth/types.js';
 
 const credentials: GoatCredentials = {
   accessToken: 'access-token',
@@ -15,6 +15,60 @@ const credentials: GoatCredentials = {
   tokenType: 'Bearer',
   accessTokenExpiresAt: new Date(Date.now() + 900_000).toISOString(),
   refreshTokenExpiresAt: new Date(Date.now() + 2_000_000).toISOString(),
+};
+const fixedCredentials: GoatCredentials = {
+  ...credentials,
+  accessTokenExpiresAt: '2026-07-05T12:15:00.000Z',
+  refreshTokenExpiresAt: '2026-07-05T13:00:00.000Z',
+};
+
+const expiredAccessCredentials: GoatCredentials = {
+  ...credentials,
+  accessTokenExpiresAt: '2026-07-05T11:59:00.000Z',
+  refreshTokenExpiresAt: '2026-07-05T13:00:00.000Z',
+};
+
+const refreshedCredentials: GoatCredentials = {
+  ...credentials,
+  accessToken: 'new-access-token',
+  refreshToken: 'new-refresh-token',
+  accessTokenExpiresAt: '2026-07-05T12:45:00.000Z',
+  refreshTokenExpiresAt: '2026-07-05T14:00:00.000Z',
+};
+
+const usageSummary: UsageSummaryResponse = {
+  version: 'v0.2.5',
+  generatedAt: '2026-07-05T12:00:00.000Z',
+  requestId: 'request-1',
+  account: {
+    displayName: 'User Example',
+    email: 'user@example.com',
+    tier: 'regular',
+    status: 'active',
+  },
+  quota: {
+    allowanceMicrousd: '100000000',
+    usedMicrousd: '85000000',
+    activeReservedMicrousd: '0',
+    totalCommittedMicrousd: '85000000',
+    remainingMicrousd: '15000000',
+    lowQuota: true,
+    lowQuotaThresholdPercent: 20,
+  },
+  window: {
+    seconds: 3600,
+    startedAt: '2026-07-05T11:00:00.000Z',
+    nextResetAt: '2026-07-05T13:00:00.000Z',
+  },
+  usage: {
+    regularMicrousd: '12000000',
+    premiumMicrousd: '73000000',
+    totalMicrousd: '85000000',
+  },
+  recent: [
+    { label: '24h', windowSeconds: 86400, regularMicrousd: '12000000', premiumMicrousd: '73000000', totalMicrousd: '85000000' },
+    { label: '7d', windowSeconds: 604800, regularMicrousd: '18000000', premiumMicrousd: '93000000', totalMicrousd: '111000000' },
+  ],
 };
 
 test('goat login is launcher-owned and stores credentials without spawning engine', async () => {
@@ -117,6 +171,177 @@ test('goat logout --local-only does not require control plane URL', async () => 
   assert.equal(await store.get(), null);
 });
 
+
+test('goat usage is launcher-owned and renders deterministic public usage', async () => {
+  let output = '';
+  let stderr = '';
+  const store = new MemoryCredentialStore(fixedCredentials);
+  const client = new FakeAuthClient([], [{ status: 'ok', summary: usageSummary }]);
+
+  await runCli({
+    argv: ['usage'],
+    env: { GOAT_CONTROL_PLANE_URL: 'https://control.example.com' },
+    authClient: client,
+    credentialStore: store,
+    stdout: writer((chunk) => { output += chunk; }),
+    stderr: writer((chunk) => { stderr += chunk; }),
+    clock: { sleep: async () => {}, now: () => new Date('2026-07-05T12:00:00.000Z') },
+    spawnEngine: () => {
+      throw new Error('usage should not spawn engine');
+    },
+  });
+
+  assert.equal(stderr, '');
+  assert.match(output, /GOAT usage/);
+  assert.match(output, /Account: User Example <user@example.com>/);
+  assert.match(output, /Tier: Regular/);
+  assert.match(output, /Quota: 15\.00 of 100\.00 quota units remaining \(15%\)/);
+  assert.match(output, /Warning: GOAT quota is low\./);
+  assert.match(output, /Next reset: 2026-07-05 13:00 UTC/);
+  assert.match(output, /Usage this window: 12\.00 regular, 73\.00 premium, 85\.00 total/);
+  assert.equal(output.includes('access-token'), false);
+  assert.equal(output.includes('refresh-token'), false);
+  assert.equal(output.includes('gpt-'), false);
+  assert.equal(output.includes('$'), false);
+});
+
+test('goat usage --json emits structured errors for TUI consumers', async () => {
+  let output = '';
+  let stderr = '';
+  let exitCode: number | undefined;
+
+  await runCli({
+    argv: ['usage', '--json'],
+    env: { GOAT_CONTROL_PLANE_URL: 'https://control.example.com' },
+    authClient: new FakeAuthClient([]),
+    credentialStore: new MemoryCredentialStore(),
+    stdout: writer((chunk) => { output += chunk; }),
+    stderr: writer((chunk) => { stderr += chunk; }),
+    exit: (code) => { exitCode = code; },
+    spawnEngine: () => {
+      throw new Error('usage should not spawn engine');
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(stderr, '');
+  const parsed = JSON.parse(output) as { ok: boolean; error: { code: string; message: string } };
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error.code, 'no_credentials');
+  assert.match(parsed.error.message, /goat login/);
+});
+
+test('goat usage --json sanitizes unexpected launcher errors', async () => {
+  let output = '';
+  let stderr = '';
+  let exitCode: number | undefined;
+
+  await runCli({
+    argv: ['usage', '--json'],
+    env: { GOAT_CONTROL_PLANE_URL: 'https://control.example.com' },
+    authClient: new FakeAuthClient([]),
+    credentialStore: {
+      async get() {
+        throw new Error('C:\\Users\\Test User\\AppData\\Roaming\\goat\\auth.json token-secret');
+      },
+      async set() {},
+      async delete() {},
+    },
+    stdout: writer((chunk) => { output += chunk; }),
+    stderr: writer((chunk) => { stderr += chunk; }),
+    exit: (code) => { exitCode = code; },
+    spawnEngine: () => {
+      throw new Error('usage should not spawn engine');
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(stderr, '');
+  const parsed = JSON.parse(output) as { ok: boolean; error: { code: string; message: string } };
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error.code, 'unavailable');
+  assert.equal(parsed.error.message, 'Unable to load GOAT usage right now. Try again later.');
+  assert.equal(output.includes('AppData'), false);
+  assert.equal(output.includes('token-secret'), false);
+});
+
+test('goat usage reports offline control-plane failures without calling them rate limits', async () => {
+  let stderr = '';
+  let exitCode: number | undefined;
+  const store = new MemoryCredentialStore(fixedCredentials);
+  const client = new FakeAuthClient([], [{ status: 'network_error', message: 'fetch failed' }]);
+
+  await runCli({
+    argv: ['usage'],
+    env: { GOAT_CONTROL_PLANE_URL: 'https://control.example.com' },
+    authClient: client,
+    credentialStore: store,
+    stdout: writer(() => {}),
+    stderr: writer((chunk) => { stderr += chunk; }),
+    exit: (code) => { exitCode = code; },
+    clock: { sleep: async () => {}, now: () => new Date('2026-07-05T12:00:00.000Z') },
+    spawnEngine: () => {
+      throw new Error('usage should not spawn engine');
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /Unable to reach GOAT control plane/);
+  assert.doesNotMatch(stderr, /rate limit/i);
+});
+
+test('goat usage refreshes expired access tokens before loading usage', async () => {
+  let output = '';
+  const store = new MemoryCredentialStore(expiredAccessCredentials);
+  const client = new FakeAuthClient(
+    [{ status: 'authorized', credentials: refreshedCredentials }],
+    [{ status: 'ok', summary: usageSummary }],
+  );
+
+  await runCli({
+    argv: ['usage'],
+    env: { GOAT_CONTROL_PLANE_URL: 'https://control.example.com' },
+    authClient: client,
+    credentialStore: store,
+    stdout: writer((chunk) => { output += chunk; }),
+    stderr: writer(() => {}),
+    clock: { sleep: async () => {}, now: () => new Date('2026-07-05T12:00:00.000Z') },
+    spawnEngine: () => {
+      throw new Error('usage should not spawn engine');
+    },
+  });
+
+  assert.match(output, /GOAT usage/);
+  assert.equal((await store.get())?.refreshToken, 'new-refresh-token');
+});
+
+test('goat usage clears local credentials when auth is expired', async () => {
+  let stderr = '';
+  let exitCode: number | undefined;
+  const store = new MemoryCredentialStore(fixedCredentials);
+  const client = new FakeAuthClient(
+    [{ status: 'invalid_grant', message: 'invalid' }],
+    [{ status: 'unauthorized', message: 'expired' }],
+  );
+
+  await runCli({
+    argv: ['usage'],
+    env: { GOAT_CONTROL_PLANE_URL: 'https://control.example.com' },
+    authClient: client,
+    credentialStore: store,
+    stdout: writer(() => {}),
+    stderr: writer((chunk) => { stderr += chunk; }),
+    exit: (code) => { exitCode = code; },
+    clock: { sleep: async () => {}, now: () => new Date('2026-07-05T12:00:00.000Z') },
+    spawnEngine: () => {
+      throw new Error('usage should not spawn engine');
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(await store.get(), null);
+  assert.match(stderr, /GOAT login expired/);
+});
 test('browser opener allowlists safe control-plane URLs', async () => {
   const calls: Array<{ command: string; args: readonly string[] }> = [];
   const opener = createBrowserOpener('win32', (command, args) => {
@@ -219,7 +444,10 @@ function failingKeyring() {
 class FakeAuthClient implements AuthApiClient {
   readonly revokedTokens: string[] = [];
 
-  constructor(private readonly pollResults: Array<Awaited<ReturnType<AuthApiClient['pollDeviceToken']>>>) {}
+  constructor(
+    private readonly pollResults: Array<Awaited<ReturnType<AuthApiClient['pollDeviceToken']>>>,
+    private readonly usageResults: UsageSummaryResult[] = [],
+  ) {}
 
   async createDeviceSession() {
     return {
@@ -244,6 +472,10 @@ class FakeAuthClient implements AuthApiClient {
 
   async revoke(refreshToken: string) {
     this.revokedTokens.push(refreshToken);
+  }
+
+  async getUsageSummary(): Promise<UsageSummaryResult> {
+    return this.usageResults.shift() ?? { status: 'network_error', message: 'No usage result configured.' };
   }
 }
 

@@ -1,4 +1,4 @@
-import type { AuthApiClient, DeviceSessionResponse, GoatCredentials, PollResult } from './types.js';
+import type { AuthApiClient, DeviceSessionResponse, GoatCredentials, PollResult, UsageSummaryResponse, UsageSummaryResult } from './types.js';
 
 export interface FetchLike {
   (input: string | URL, init?: RequestInit): Promise<Response>;
@@ -79,6 +79,17 @@ export function createAuthApiClient(baseUrl: URL, fetchImpl: FetchLike = fetch):
         throw new Error('A network error occurred while revoking the server session.');
       }
     },
+    async getUsageSummary(accessToken) {
+      try {
+        const res = await fetchJson(endpoint(baseUrl, '/v1/usage/summary'), {
+          method: 'GET',
+          headers: { authorization: `Bearer ${accessToken.replace(/[\r\n]/g, '')}` },
+        }, fetchImpl);
+        return parseUsageSummaryResponse(res);
+      } catch {
+        return { status: 'network_error', message: 'A network error occurred while loading GOAT usage.' };
+      }
+    },
   };
 }
 
@@ -127,6 +138,81 @@ async function parseTokenResponse(res: Response): Promise<PollResult> {
   return { status: 'invalid_grant', message: 'The login token is invalid or already used.' };
 }
 
+async function parseUsageSummaryResponse(res: Response): Promise<UsageSummaryResult> {
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+
+  if (res.status === 401) return { status: 'unauthorized', message: 'Invalid or expired GOAT access token.' };
+  if (res.ok) {
+    if (isUsageSummaryResponse(body)) return { status: 'ok', summary: body };
+    return { status: 'unexpected_response', message: 'The server returned an unexpected usage response.' };
+  }
+  return { status: 'server_error', message: 'GOAT usage is temporarily unavailable.' };
+}
+
+function isUsageSummaryResponse(value: unknown): value is UsageSummaryResponse {
+  const body = objectValue(value);
+  if (!body) return false;
+  return typeof body.version === 'string' &&
+    typeof body.generatedAt === 'string' &&
+    isStringOrNull(body.requestId) &&
+    isUsageAccount(body.account) &&
+    isUsageQuota(body.quota) &&
+    isUsageWindow(body.window) &&
+    isUsageBreakdown(body.usage) &&
+    Array.isArray(body.recent) &&
+    body.recent.every(isUsageRecentTotal);
+}
+
+function isUsageAccount(value: unknown): boolean {
+  const account = objectValue(value);
+  return !!account &&
+    isStringOrNull(account.displayName) &&
+    isStringOrNull(account.email) &&
+    (account.tier === 'free' || account.tier === 'regular' || account.tier === 'premium' || account.tier === 'none') &&
+    (account.status === 'active' || account.status === 'no_entitlement' || account.status === 'quota_suspended' || account.status === 'quota_revoked');
+}
+
+function isUsageQuota(value: unknown): boolean {
+  const quota = objectValue(value);
+  return !!quota &&
+    isAmountOrNull(quota.allowanceMicrousd) &&
+    isAmount(quota.usedMicrousd) &&
+    isAmount(quota.activeReservedMicrousd) &&
+    isAmount(quota.totalCommittedMicrousd) &&
+    isAmountOrNull(quota.remainingMicrousd) &&
+    typeof quota.lowQuota === 'boolean' &&
+    typeof quota.lowQuotaThresholdPercent === 'number';
+}
+
+function isUsageWindow(value: unknown): boolean {
+  const window = objectValue(value);
+  return !!window &&
+    (typeof window.seconds === 'number' || window.seconds === null) &&
+    isStringOrNull(window.startedAt) &&
+    isStringOrNull(window.nextResetAt);
+}
+
+function isUsageBreakdown(value: unknown): boolean {
+  const usage = objectValue(value);
+  return !!usage &&
+    isAmount(usage.regularMicrousd) &&
+    isAmount(usage.premiumMicrousd) &&
+    isAmount(usage.totalMicrousd);
+}
+
+function isUsageRecentTotal(value: unknown): boolean {
+  const recent = objectValue(value);
+  return !!recent &&
+    isUsageBreakdown(recent) &&
+    typeof recent.label === 'string' &&
+    typeof recent.windowSeconds === 'number';
+}
+
 function endpoint(baseUrl: URL, path: string): URL {
   const url = new URL(baseUrl.toString());
   url.pathname = url.pathname.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
@@ -145,4 +231,20 @@ function intervalSeconds(body: unknown): number | undefined {
   if (!body || typeof body !== 'object') return undefined;
   const value = (body as { intervalSeconds?: unknown }).intervalSeconds;
   return typeof value === 'number' ? value : undefined;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : null;
+}
+
+function isStringOrNull(value: unknown): boolean {
+  return typeof value === 'string' || value === null;
+}
+
+function isAmount(value: unknown): boolean {
+  return typeof value === 'string' && /^\d+$/.test(value);
+}
+
+function isAmountOrNull(value: unknown): boolean {
+  return value === null || isAmount(value);
 }
