@@ -54,12 +54,12 @@ export interface UsageAmountBreakdown {
 }
 
 export interface UsageRecentTotal extends UsageAmountBreakdown {
-  label: '24h' | '7d';
+  label: string;
   windowSeconds: number;
 }
 
 export interface UsageSummaryResponse {
-  version: 'v0.2.5';
+  version: string;
   generatedAt: string;
   requestId: string | null;
   account: UsageAccountSummary;

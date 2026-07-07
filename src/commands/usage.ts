@@ -13,7 +13,6 @@ type UsageErrorCode = 'no_credentials' | 'offline' | 'expired_auth' | 'unavailab
 type UsageCommandError = { code: UsageErrorCode; message: string };
 
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000;
-const MICRO_UNITS = 1_000_000n;
 
 export async function runUsage(options: UsageOptions): Promise<number> {
   const now = options.now?.() ?? new Date();
@@ -99,7 +98,11 @@ async function resolveUsageResult(
   if (retry.status === 'ok') return { summary: retry.summary };
   if (retry.status === 'network_error') return { error: offlineError() };
   if (retry.status === 'unauthorized') {
-    await options.store.delete();
+    try {
+      await options.store.delete();
+    } catch {
+      // Best-effort cleanup; still return the auth error.
+    }
     return { error: expiredAuthError() };
   }
   return { error: unavailableError() };
@@ -132,7 +135,11 @@ async function refreshCredentials(
   }
   if (result.status === 'network_error') return { error: offlineError() };
   if (result.status === 'invalid_grant' || result.status === 'revoked' || result.status === 'replay_detected' || result.status === 'expired') {
-    await options.store.delete();
+    try {
+      await options.store.delete();
+    } catch {
+      // Best-effort cleanup; still return the auth error.
+    }
   }
   return { error: expiredAuthError() };
 }
@@ -156,8 +163,9 @@ function formatBreakdown(value: { regularMicrousd: string; premiumMicrousd: stri
 function formatAmount(value: string | null): string {
   if (value === null || !/^\d+$/.test(value)) return 'n/a';
   const raw = BigInt(value);
-  const whole = raw / MICRO_UNITS;
-  const fraction = (raw % MICRO_UNITS).toString().padStart(6, '0').slice(0, 2);
+  const roundedCents = (raw + 5000n) / 10000n;
+  const whole = roundedCents / 100n;
+  const fraction = (roundedCents % 100n).toString().padStart(2, '0');
   return `${whole}.${fraction}`;
 }
 

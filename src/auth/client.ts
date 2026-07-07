@@ -83,7 +83,7 @@ export function createAuthApiClient(baseUrl: URL, fetchImpl: FetchLike = fetch):
       try {
         const res = await fetchJson(endpoint(baseUrl, '/v1/usage/summary'), {
           method: 'GET',
-          headers: { authorization: `Bearer ${accessToken}` },
+          headers: { authorization: `Bearer ${accessToken.replace(/[\r\n]/g, '')}` },
         }, fetchImpl);
         return parseUsageSummaryResponse(res);
       } catch {
@@ -157,7 +157,7 @@ async function parseUsageSummaryResponse(res: Response): Promise<UsageSummaryRes
 function isUsageSummaryResponse(value: unknown): value is UsageSummaryResponse {
   const body = objectValue(value);
   if (!body) return false;
-  return body.version === 'v0.2.5' &&
+  return typeof body.version === 'string' &&
     typeof body.generatedAt === 'string' &&
     isStringOrNull(body.requestId) &&
     isUsageAccount(body.account) &&
@@ -209,7 +209,7 @@ function isUsageRecentTotal(value: unknown): boolean {
   const recent = objectValue(value);
   return !!recent &&
     isUsageBreakdown(recent) &&
-    (recent.label === '24h' || recent.label === '7d') &&
+    typeof recent.label === 'string' &&
     typeof recent.windowSeconds === 'number';
 }
 

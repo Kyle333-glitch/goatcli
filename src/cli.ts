@@ -107,8 +107,10 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
       });
       if (code !== 0) exit(code);
       return;
-    } catch {
-      const usageError = { code: 'unavailable', message: 'Unable to load GOAT usage right now. Try again later.' };
+    } catch (error) {
+      const isConfigError = error instanceof Error && error.message.includes('GOAT_CONTROL_PLANE_URL');
+      const message = isConfigError ? error.message : 'Unable to load GOAT usage right now. Try again later.';
+      const usageError = { code: 'unavailable', message };
       if (json) stdout.write(`${JSON.stringify({ ok: false, error: usageError })}\n`);
       else stderr.write(`${usageError.message}\n`);
       exit(1);
