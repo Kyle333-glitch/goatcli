@@ -1,10 +1,11 @@
-name: goatcli-test
+name: goatcli-privacy
 
 on:
   push:
     branches:
       - main
       - dev
+      - feat/v0.3.2-privacy-telemetry
   pull_request:
   workflow_dispatch:
 
@@ -17,26 +18,45 @@ permissions:
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
+    name: privacy (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node 24.16.0
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: 24.16.0
+          cache: npm
 
-      - name: Install dependencies
+      - name: Record native platform
+        run: node -p "process.platform + '-' + process.arch + ' node-' + process.versions.node"
+
+      - name: Install locked dependencies
         run: npm ci
 
-      - name: Build
-        run: npm run build
+      - name: Check formatting
+        run: npm run format:check
 
-      - name: Run tests
+      - name: Check privacy architecture
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Run full tests
         run: npm test
+
+      - name: Run privacy canary tests
+        run: npm run test:privacy
+
+      - name: Verify npm payload
+        run: npm run verify:package
+
+      - name: Show npm dry-run payload
+        run: npm pack --dry-run --json --ignore-scripts

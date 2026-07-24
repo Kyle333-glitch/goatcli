@@ -1,15 +1,22 @@
-import type { AuthApiClient, CredentialStore, GoatCredentials, UsageSummaryResponse, UsageSummaryResult } from '../auth/types.js';
+import type {
+  AuthApiClient,
+  CredentialStore,
+  GoatCredentials,
+  UsageSummaryResponse,
+  UsageSummaryResult,
+} from "../auth/types.js";
 
 export interface UsageOptions {
   client: AuthApiClient;
   store: CredentialStore;
-  stdout: Pick<NodeJS.WriteStream, 'write'>;
-  stderr: Pick<NodeJS.WriteStream, 'write'>;
+  stdout: Pick<NodeJS.WriteStream, "write">;
+  stderr: Pick<NodeJS.WriteStream, "write">;
   json?: boolean;
   now?: () => Date;
 }
 
-type UsageErrorCode = 'no_credentials' | 'offline' | 'expired_auth' | 'unavailable';
+type UsageErrorCode =
+  "no_credentials" | "offline" | "expired_auth" | "unavailable";
 type UsageCommandError = { code: UsageErrorCode; message: string };
 
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000;
@@ -19,20 +26,24 @@ export async function runUsage(options: UsageOptions): Promise<number> {
   const current = await options.store.get();
   if (!current) {
     return writeUsageError(options, {
-      code: 'no_credentials',
-      message: 'No GOAT login credentials found. Run `goat login`.',
+      code: "no_credentials",
+      message: "No GOAT login credentials found. Run `goat login`.",
     });
   }
 
   const ready = await ensureFreshAccessToken(options, current, now);
-  if ('error' in ready) return writeUsageError(options, ready.error);
+  if ("error" in ready) return writeUsageError(options, ready.error);
 
-  const first = await options.client.getUsageSummary(ready.credentials.accessToken);
+  const first = await options.client.getUsageSummary(
+    ready.credentials.accessToken,
+  );
   const summary = await resolveUsageResult(options, first, ready.credentials);
-  if ('error' in summary) return writeUsageError(options, summary.error);
+  if ("error" in summary) return writeUsageError(options, summary.error);
 
   if (options.json) {
-    options.stdout.write(`${JSON.stringify({ ok: true, summary: summary.summary })}\n`);
+    options.stdout.write(
+      `${JSON.stringify({ ok: true, summary: summary.summary })}\n`,
+    );
   } else {
     options.stdout.write(formatUsageSummary(summary.summary));
   }
@@ -40,44 +51,64 @@ export async function runUsage(options: UsageOptions): Promise<number> {
 }
 
 export function formatUsageSummary(summary: UsageSummaryResponse): string {
-  const lines: string[] = ['GOAT usage'];
-  lines.push(`Account: ${formatAccount(summary.account.displayName, summary.account.email)}`);
+  const lines: string[] = ["GOAT usage"];
   lines.push(`Tier: ${titleCase(summary.account.tier)}`);
   lines.push(`Status: ${formatStatus(summary.account.status)}`);
 
   if (summary.quota.allowanceMicrousd === null) {
-    lines.push('Quota: no active allowance');
+    lines.push("Quota: no active allowance");
   } else {
     const remaining = formatAmount(summary.quota.remainingMicrousd);
     const allowance = formatAmount(summary.quota.allowanceMicrousd);
-    const percent = formatRemainingPercent(summary.quota.remainingMicrousd, summary.quota.allowanceMicrousd);
-    lines.push(`Quota: ${remaining} of ${allowance} quota units remaining (${percent})`);
+    const percent = formatRemainingPercent(
+      summary.quota.remainingMicrousd,
+      summary.quota.allowanceMicrousd,
+    );
+    lines.push(
+      `Quota: ${remaining} of ${allowance} quota units remaining (${percent})`,
+    );
   }
 
-  if (summary.quota.lowQuota) lines.push('Warning: GOAT quota is low.');
+  if (summary.quota.lowQuota) lines.push("Warning: GOAT quota is low.");
 
   if (summary.window.nextResetAt) {
     lines.push(`Next reset: ${formatUtcMinute(summary.window.nextResetAt)}`);
   } else if (summary.window.seconds === null) {
-    lines.push('Next reset: no active rolling window');
+    lines.push("Next reset: no active rolling window");
   } else {
-    lines.push('Next reset: after new usage in this window');
+    lines.push("Next reset: after new usage in this window");
   }
 
   lines.push(`Usage this window: ${formatBreakdown(summary.usage)}`);
-  lines.push('Recent totals:');
+  lines.push("Recent totals:");
   for (const item of summary.recent) {
     lines.push(`  ${item.label}: ${formatBreakdown(item)}`);
   }
 
-  return `${lines.join('\n')}\n`;
+  return `${lines.join("\n")}\n`;
 }
 
-function writeUsageError(options: UsageOptions, error: UsageCommandError): number {
+function writeUsageError(
+  options: UsageOptions,
+  error: UsageCommandError,
+): number {
+  const safeError =
+    error.code === "no_credentials"
+      ? {
+          code: "no_credentials",
+          message: "No GOAT login credentials found. Run `goat login`.",
+        }
+      : error.code === "offline"
+        ? offlineError()
+        : error.code === "expired_auth"
+          ? expiredAuthError()
+          : unavailableError();
   if (options.json) {
-    options.stdout.write(`${JSON.stringify({ ok: false, error })}\n`);
+    options.stdout.write(
+      `${JSON.stringify({ ok: false, error: safeError })}\n`,
+    );
   } else {
-    options.stderr.write(`${error.message}\n`);
+    options.stderr.write(`${safeError.message}\n`);
   }
   return 1;
 }
@@ -87,17 +118,19 @@ async function resolveUsageResult(
   result: UsageSummaryResult,
   current: GoatCredentials,
 ): Promise<{ summary: UsageSummaryResponse } | { error: UsageCommandError }> {
-  if (result.status === 'ok') return { summary: result.summary };
-  if (result.status === 'network_error') return { error: offlineError() };
-  if (result.status !== 'unauthorized') return { error: unavailableError() };
+  if (result.status === "ok") return { summary: result.summary };
+  if (result.status === "network_error") return { error: offlineError() };
+  if (result.status !== "unauthorized") return { error: unavailableError() };
 
   const refreshed = await refreshCredentials(options, current);
-  if ('error' in refreshed) return refreshed;
+  if ("error" in refreshed) return refreshed;
 
-  const retry = await options.client.getUsageSummary(refreshed.credentials.accessToken);
-  if (retry.status === 'ok') return { summary: retry.summary };
-  if (retry.status === 'network_error') return { error: offlineError() };
-  if (retry.status === 'unauthorized') {
+  const retry = await options.client.getUsageSummary(
+    refreshed.credentials.accessToken,
+  );
+  if (retry.status === "ok") return { summary: retry.summary };
+  if (retry.status === "network_error") return { error: offlineError() };
+  if (retry.status === "unauthorized") {
     try {
       await options.store.delete();
     } catch {
@@ -114,7 +147,10 @@ async function ensureFreshAccessToken(
   now: Date,
 ): Promise<{ credentials: GoatCredentials } | { error: UsageCommandError }> {
   const expiresAt = Date.parse(credentials.accessTokenExpiresAt);
-  if (Number.isFinite(expiresAt) && expiresAt > now.getTime() + ACCESS_TOKEN_REFRESH_SKEW_MS) {
+  if (
+    Number.isFinite(expiresAt) &&
+    expiresAt > now.getTime() + ACCESS_TOKEN_REFRESH_SKEW_MS
+  ) {
     return { credentials };
   }
   return refreshCredentials(options, credentials);
@@ -125,16 +161,26 @@ async function refreshCredentials(
   credentials: GoatCredentials,
 ): Promise<{ credentials: GoatCredentials } | { error: UsageCommandError }> {
   const result = await options.client.refresh(credentials.refreshToken);
-  if (result.status === 'authorized') {
+  if (result.status === "authorized") {
     try {
       await options.store.set(result.credentials);
     } catch {
-      // The refreshed access token is usable even if persisting it fails.
+      await discardUnstoredCredential(
+        options.client,
+        options.store,
+        result.credentials.refreshToken,
+      );
+      return { error: unavailableError() };
     }
     return { credentials: result.credentials };
   }
-  if (result.status === 'network_error') return { error: offlineError() };
-  if (result.status === 'invalid_grant' || result.status === 'revoked' || result.status === 'replay_detected' || result.status === 'expired') {
+  if (result.status === "network_error") return { error: offlineError() };
+  if (
+    result.status === "invalid_grant" ||
+    result.status === "revoked" ||
+    result.status === "replay_detected" ||
+    result.status === "expired"
+  ) {
     try {
       await options.store.delete();
     } catch {
@@ -144,64 +190,101 @@ async function refreshCredentials(
   return { error: expiredAuthError() };
 }
 
+async function discardUnstoredCredential(
+  client: AuthApiClient,
+  store: CredentialStore,
+  refreshToken: string,
+): Promise<void> {
+  try {
+    await client.revoke(refreshToken);
+  } catch {
+    // Best effort: the usage error remains fixed and path-free.
+  }
+  try {
+    await store.delete();
+  } catch {
+    // Best effort: do not replace the normalized usage error.
+  }
+}
+
 function offlineError(): UsageCommandError {
-  return { code: 'offline', message: 'Unable to reach GOAT control plane. Check your connection and try again.' };
+  return {
+    code: "offline",
+    message:
+      "Unable to reach GOAT control plane. Check your connection and try again.",
+  };
 }
 
 function expiredAuthError(): UsageCommandError {
-  return { code: 'expired_auth', message: 'GOAT login expired. Run `goat login`.' };
+  return {
+    code: "expired_auth",
+    message: "GOAT login expired. Run `goat login`.",
+  };
 }
 
 function unavailableError(): UsageCommandError {
-  return { code: 'unavailable', message: 'Unable to load GOAT usage right now. Try again later.' };
+  return {
+    code: "unavailable",
+    message: "Unable to load GOAT usage right now. Try again later.",
+  };
 }
 
-function formatBreakdown(value: { regularMicrousd: string; premiumMicrousd: string; totalMicrousd: string }): string {
+function formatBreakdown(value: {
+  regularMicrousd: string;
+  premiumMicrousd: string;
+  totalMicrousd: string;
+}): string {
   return `${formatAmount(value.regularMicrousd)} regular, ${formatAmount(value.premiumMicrousd)} premium, ${formatAmount(value.totalMicrousd)} total`;
 }
 
 function formatAmount(value: string | null): string {
-  if (value === null || !/^\d+$/.test(value)) return 'n/a';
+  if (value === null || !/^\d+$/.test(value)) return "n/a";
   const raw = BigInt(value);
   const roundedCents = (raw + 5000n) / 10000n;
   const whole = roundedCents / 100n;
-  const fraction = (roundedCents % 100n).toString().padStart(2, '0');
+  const fraction = (roundedCents % 100n).toString().padStart(2, "0");
   return `${whole}.${fraction}`;
 }
 
-function formatRemainingPercent(remainingValue: string | null, allowanceValue: string | null): string {
-  if (remainingValue === null || allowanceValue === null || !/^\d+$/.test(remainingValue) || !/^\d+$/.test(allowanceValue)) return 'n/a';
+function formatRemainingPercent(
+  remainingValue: string | null,
+  allowanceValue: string | null,
+): string {
+  if (
+    remainingValue === null ||
+    allowanceValue === null ||
+    !/^\d+$/.test(remainingValue) ||
+    !/^\d+$/.test(allowanceValue)
+  )
+    return "n/a";
   const remaining = BigInt(remainingValue);
   const allowance = BigInt(allowanceValue);
-  if (allowance <= 0n) return '0%';
+  if (allowance <= 0n) return "0%";
   return `${(remaining * 100n) / allowance}%`;
 }
 
 function formatUtcMinute(value: string): string {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'unknown';
+  if (Number.isNaN(date.getTime())) return "unknown";
   const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  const hour = String(date.getUTCHours()).padStart(2, '0');
-  const minute = String(date.getUTCMinutes()).padStart(2, '0');
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const hour = String(date.getUTCHours()).padStart(2, "0");
+  const minute = String(date.getUTCMinutes()).padStart(2, "0");
   return `${year}-${month}-${day} ${hour}:${minute} UTC`;
 }
 
-function formatAccount(displayName: string | null, email: string | null): string {
-  if (displayName && email) return `${displayName} <${email}>`;
-  if (displayName) return displayName;
-  if (email) return email;
-  return 'GOAT account';
-}
-
-function formatStatus(status: UsageSummaryResponse['account']['status']): string {
-  if (status === 'no_entitlement') return 'No active entitlement';
-  if (status === 'quota_suspended') return 'Quota suspended';
-  if (status === 'quota_revoked') return 'Quota revoked';
-  return 'Active';
+function formatStatus(
+  status: UsageSummaryResponse["account"]["status"],
+): string {
+  if (status === "no_entitlement") return "No active entitlement";
+  if (status === "quota_suspended") return "Quota suspended";
+  if (status === "quota_revoked") return "Quota revoked";
+  return "Active";
 }
 
 function titleCase(value: string): string {
-  return value.length === 0 ? value : `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+  return value.length === 0
+    ? value
+    : `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
 }

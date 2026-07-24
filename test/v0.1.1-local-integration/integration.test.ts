@@ -1,222 +1,310 @@
-import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { spawn, type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  launchEngine,
+  launchValidatedEngine,
+  type ProcessLike,
+  type SpawnEngine,
+} from "../../src/engine/launch.js";
+import type {
+  GoatArchitecture,
+  GoatPlatform,
+  ResolvedEngine,
+} from "../../src/engine/contract.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Use the built dist entry so the child process doesn't need tsx.
-// The test file itself still runs under tsx via `node --import tsx --test`.
-const cliEntry = path.resolve(__dirname, '../../dist/index.js');
+const TEST_TIMEOUT_MS = 8_000;
 
-function sha256(input: Buffer): string {
-  return createHash('sha256').update(input).digest('hex');
+function currentPlatform(): GoatPlatform {
+  assert.ok(
+    process.platform === "win32" || process.platform === "darwin",
+    "launcher integration tests require Windows or macOS",
+  );
+  return process.platform;
 }
 
-function makeManifest(checksum: string, platform: NodeJS.Platform, arch: string) {
-  const executablePath = `bin/goat-engine${platform === 'win32' ? '.exe' : ''}`;
+function currentArchitecture(): GoatArchitecture {
+  assert.ok(
+    process.arch === "x64" || process.arch === "arm64",
+    "launcher integration tests require x64 or arm64",
+  );
+  return process.arch;
+}
+
+function developmentEngine(): ResolvedEngine {
   return {
-    engineVersion: '1.17.11',
-    platform,
-    architecture: arch,
-    executablePath,
-    releaseChannel: 'stable',
-    checksum: {
-      algorithm: 'sha256' as const,
-      value: checksum,
-    },
-    compatibility: {
-      minimumLauncherVersion: '0.0.6',
-      maximumLauncherVersion: '0.0.6',
-    },
+    executablePath: process.execPath,
+    manifestPath: null,
+    source: "development",
+    releaseChannel: "dev",
+    platform: currentPlatform(),
+    architecture: currentArchitecture(),
+    developmentOverride: true,
   };
 }
 
-function prepareFakeEngine(installRoot: string) {
-  const platform = process.platform;
-  const arch = process.arch;
-
-  // For dev-env mode (GOATCLI_DEV=1), GOAT_DEV_ENGINE_PATH points directly
-  // to the engine executable. We use the current Node executable as a fake
-  // engine so that -e scripts and process.exit() work correctly without
-  // needing to copy platform-specific dependencies (e.g. Windows DLLs).
-  const enginePath = process.execPath;
-
-  fs.mkdirSync(installRoot, { recursive: true });
-  const manifestPath = path.join(installRoot, 'goat-engine.json');
-  fs.writeFileSync(manifestPath, JSON.stringify(makeManifest(sha256(Buffer.from('dummy')), platform, arch)));
-
-  return { enginePath, manifestPath, platform, arch };
-}
-
-function runLauncher(
-  args: string[],
+async function launchNode(
+  args: readonly string[],
   options: {
     cwd?: string;
     env?: NodeJS.ProcessEnv;
-    devEnginePath?: string;
+    processLike?: ProcessLike;
+    spawnEngine?: SpawnEngine;
   } = {},
 ) {
-  const env = { ...process.env, ...options.env };
-  if (options.devEnginePath) {
-    env.GOAT_DEV_ENGINE_PATH = options.devEnginePath;
-    env.GOATCLI_DEV = '1';
-  }
-  return spawn(process.execPath, [cliEntry, ...args], {
-    cwd: options.cwd ?? process.cwd(),
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
+  return withTimeout(
+    launchEngine({
+      launcherVersion: "0.0.6",
+      args,
+      cwd: options.cwd,
+      env: options.env,
+      processLike: options.processLike,
+      spawnEngine: options.spawnEngine,
+      processTerminator: () => ({ status: 0 }),
+      resolvedEngine: developmentEngine(),
+      nodeVersion: "24.16.0",
+    }),
+  );
 }
 
-async function collect(child: ReturnType<typeof spawn>) {
-  let stdout = '';
-  let stderr = '';
-  child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-  child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-  const exitCode = await new Promise<number>((resolve, reject) => {
-    if (child.exitCode !== null) {
-      resolve(child.exitCode);
-      return;
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs = TEST_TIMEOUT_MS,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("bounded launcher integration timed out")),
+          timeoutMs,
+        );
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function waitForFile(filePath: string): Promise<void> {
+  const deadline = Date.now() + TEST_TIMEOUT_MS;
+  while (!fs.existsSync(filePath)) {
+    if (Date.now() >= deadline) {
+      throw new Error("bounded launcher readiness wait timed out");
     }
-    child.on('close', (code) => resolve(typeof code === 'number' ? code : 1));
-    child.on('error', reject);
-  });
-  return { exitCode, stdout, stderr };
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
-test('launcher starts engine and forwards non-launcher args unchanged', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'goat-test-'));
+function makeProcessLike(
+  emitter: EventEmitter,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ProcessLike {
+  return {
+    platform: currentPlatform(),
+    arch: currentArchitecture(),
+    pid: process.pid,
+    env,
+    cwd: () => cwd,
+    on: emitter.on.bind(emitter) as ProcessLike["on"],
+    removeListener: emitter.removeListener.bind(
+      emitter,
+    ) as ProcessLike["removeListener"],
+  };
+}
+
+test("launcher starts engine and forwards non-launcher args unchanged", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "goat-test-"));
   try {
-    const { enginePath } = prepareFakeEngine(tmpDir);
+    const outputPath = path.join(tmpDir, "SOURCE_CODE_SECRET_4JK2.json");
+    const forwarded = [
+      "run",
+      "--flag",
+      "value with spaces",
+      "PROMPT_SECRET_7QX9",
+    ];
+    const script =
+      'require("node:fs").writeFileSync(process.argv[1], JSON.stringify(process.argv.slice(2)))';
 
-    // Use node -e to echo argv so we can verify forwarded args exactly.
-    const child = runLauncher(
-      ['-e', 'console.log(process.argv.slice(1).join(String.fromCharCode(10)))', 'run', '--flag', 'value with spaces', 'unicode-測試'],
-      { devEnginePath: enginePath },
+    const result = await launchNode(["-e", script, outputPath, ...forwarded]);
+
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(outputPath, "utf8")),
+      forwarded,
     );
-
-    const { exitCode, stdout } = await collect(child);
-
-    assert.equal(exitCode, 0);
-    assert.ok(stdout.includes('run'), 'stdout should include forwarded arg "run"');
-    assert.ok(stdout.includes('--flag'), 'stdout should include forwarded arg "--flag"');
-    assert.ok(stdout.includes('value with spaces'), 'stdout should include forwarded arg "value with spaces"');
-    assert.ok(stdout.includes('unicode-測試'), 'stdout should include forwarded arg "unicode-測試"');
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
-test('engine receives exact cwd from paths containing spaces and Unicode', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'goat-test-'));
+test("engine receives the exact working directory without launcher inspection", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "goat-test-"));
   try {
-    const workDir = path.join(tmpDir, 'work dir 測試');
+    const workDir = path.join(tmpDir, "work dir PATH_SECRET_3HT6");
+    const outputPath = path.join(tmpDir, "TOKEN_SECRET_8MVP-cwd.txt");
     fs.mkdirSync(workDir, { recursive: true });
-    const { enginePath } = prepareFakeEngine(tmpDir);
+    const script =
+      'require("node:fs").writeFileSync(process.argv[1], process.cwd())';
 
-    const child = runLauncher(['-e', 'console.log(process.cwd())'], {
+    const result = await launchNode(["-e", script, outputPath], {
       cwd: workDir,
-      devEnginePath: enginePath,
     });
 
-    const { exitCode, stdout, stderr } = await collect(child);
-
-    assert.equal(exitCode, 0, `expected exit 0, got ${exitCode}. stderr:\n${stderr}`);
-    const normalizedStdout = stdout.replace(/\r\n/g, '\n').trim();
-    assert.ok(
-      normalizedStdout.includes(workDir),
-      `stdout should contain cwd "${workDir}", got:\n${stdout}`,
-    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(fs.readFileSync(outputPath, "utf8"), workDir);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
-test('GOAT branding appears in engine output', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'goat-test-'));
+test("engine receives only minimal environment values", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "goat-test-"));
   try {
-    const { enginePath } = prepareFakeEngine(tmpDir);
+    const outputPath = path.join(tmpDir, "environment.json");
+    const script =
+      'const fs=require("node:fs");fs.writeFileSync(process.argv[1],JSON.stringify({path:process.env.PATH,provider:process.env.ENV_SECRET_9DK1,controlPlane:process.env.GOAT_CONTROL_PLANE_URL,enginePath:process.env.GOAT_ENGINE_PATH}))';
+    const env = {
+      ...process.env,
+      PATH: process.env.PATH ?? "",
+      ENV_SECRET_9DK1: "TOKEN_SECRET_8MVP",
+      GOAT_CONTROL_PLANE_URL: "https://example.invalid/SOURCE_CODE_SECRET_4JK2",
+      GOAT_ENGINE_PATH: path.join(tmpDir, "PATH_SECRET_3HT6"),
+    };
 
-    const child = runLauncher(['-e', 'console.log("GOAT engine ready")'], {
-      devEnginePath: enginePath,
-    });
+    const result = await launchNode(["-e", script, outputPath], { env });
+    const childEnvironment = JSON.parse(fs.readFileSync(outputPath, "utf8"));
 
-    const { exitCode, stdout } = await collect(child);
-
-    assert.equal(exitCode, 0);
-    assert.ok(stdout.includes('GOAT engine ready'));
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(childEnvironment, { path: env.PATH });
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
-test('exit code propagates from engine to launcher', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'goat-test-'));
-  try {
-    const { enginePath } = prepareFakeEngine(tmpDir);
-
-    const child = runLauncher(['-e', 'process.exit(42)'], {
-      devEnginePath: enginePath,
+test("child output remains inherited and absent from launcher-owned results", async () => {
+  let captured = "";
+  let captureComplete = Promise.resolve();
+  const spawnEngine: SpawnEngine = (command, args, options) => {
+    assert.deepEqual(options.stdio, [
+      "inherit",
+      "inherit",
+      "inherit",
+      "pipe",
+      "pipe",
+    ]);
+    const child = spawn(command, [...args], {
+      ...options,
+      stdio: ["ignore", "pipe", "pipe"],
     });
+    child.stdout?.on("data", (chunk) => {
+      captured += String(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      captured += String(chunk);
+    });
+    captureComplete = new Promise((resolve) => child.once("close", resolve));
+    return child;
+  };
 
-    const { exitCode } = await collect(child);
+  const result = await launchNode(
+    [
+      "-e",
+      'console.log("SOURCE_CODE_SECRET_4JK2");console.error("TOKEN_SECRET_8MVP")',
+    ],
+    { spawnEngine },
+  );
+  await captureComplete;
 
-    assert.equal(exitCode, 42);
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
+  assert.deepEqual(result, { exitCode: 0, signal: null });
+  assert.deepEqual(Object.keys(result).sort(), ["exitCode", "signal"]);
+  assert.equal(captured.includes("SOURCE_CODE_SECRET_4JK2"), true);
+  assert.equal(captured.includes("TOKEN_SECRET_8MVP"), true);
 });
 
-test('cancellation interrupts an active engine and child exits', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'goat-test-'));
-  try {
-    const { enginePath } = prepareFakeEngine(tmpDir);
+test("native Node child completes authenticated fd 3/4 privacy handshake", async () => {
+  const script = [
+    'const fs=require("node:fs");',
+    'const crypto=require("node:crypto");',
+    "const readExact=(fd,count)=>{const bytes=Buffer.alloc(count);let offset=0;while(offset<count){const read=fs.readSync(fd,bytes,offset,count-offset,null);if(read<1)throw new Error('closed');offset+=read;}return bytes;};",
+    "const bootstrap=readExact(3,40);",
+    "if(bootstrap.subarray(0,8).toString('utf8')!=='GOATIPC1')process.exit(2);",
+    "const secret=bootstrap.subarray(8);",
+    "const prefix=readExact(3,6);",
+    "const headerLength=prefix.readUInt32BE(0);",
+    "const credentialLength=prefix.readUInt16BE(4);",
+    "const body=readExact(3,headerLength+credentialLength+32);",
+    "const authenticated=Buffer.concat([prefix,body.subarray(0,headerLength+credentialLength)]);",
+    "const expected=crypto.createHmac('sha256',secret).update(Buffer.from('GOAT launcher IPC request v1\\0')).update(authenticated).digest();",
+    "if(!crypto.timingSafeEqual(expected,body.subarray(headerLength+credentialLength)))process.exit(3);",
+    "const request=JSON.parse(body.subarray(0,headerLength).toString('utf8'));",
+    "const responseHeader=Buffer.from(JSON.stringify({protocol_version:1,message_type:'session_ack',session_id:request.session_id,sequence:request.sequence,status:'accepted'}));",
+    "const responsePrefix=Buffer.alloc(6);responsePrefix.writeUInt32BE(responseHeader.length,0);",
+    "const responseAuthenticated=Buffer.concat([responsePrefix,responseHeader]);",
+    "const responseTag=crypto.createHmac('sha256',secret).update(Buffer.from('GOAT launcher IPC response v1\\0')).update(responseAuthenticated).digest();",
+    "fs.writeSync(4,Buffer.concat([responseAuthenticated,responseTag]));",
+    "bootstrap.fill(0);secret.fill(0);body.fill(0);expected.fill(0);responseTag.fill(0);",
+  ].join("");
 
-    const child = runLauncher(
-      ['-e', 'console.log("ready"); setInterval(() => {}, 1000)'],
-      { devEnginePath: enginePath },
-    );
+  const result = await withTimeout(
+    launchValidatedEngine(
+      { executablePath: process.execPath, platform: currentPlatform() },
+      ["-e", script],
+      {
+        cwd: process.cwd(),
+        environment: { ...process.env },
+        privacyIpc: {
+          mode: "eager",
+          engineIntegrity: "development_unverified",
+          credentialStore: "not_checked",
+          launcherPid: process.pid,
+        },
+      },
+    ),
+  );
 
-    // Wait for the child to signal readiness before sending SIGINT
-    await new Promise<void>((resolve) => {
-      child.stdout?.on('data', function listener(chunk: Buffer) {
-        if (chunk.toString().includes('ready')) {
-          child.stdout?.off('data', listener);
-          resolve();
-        }
-      });
-    });
-    child.kill('SIGINT');
-
-    const { exitCode } = await collect(child);
-
-    // On Windows, SIGINT may exit with 1; on Unix it may be 130 (128 + SIGINT)
-    assert.notEqual(exitCode, 0, 'expected nonzero exit after SIGINT');
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
+  assert.deepEqual(result, { exitCode: 0, signal: null });
 });
 
-test('no remaining launched child PID after engine exits', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'goat-test-'));
+test("exit code propagates from engine to launcher", async () => {
+  const result = await launchNode(["-e", "process.exit(42)"]);
+  assert.equal(result.exitCode, 42);
+});
+
+test("cancellation interrupts an active engine and leaves no child", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "goat-test-"));
+  let child: ChildProcess | undefined;
   try {
-    const { enginePath } = prepareFakeEngine(tmpDir);
+    const readyPath = path.join(tmpDir, "ready");
+    const emitter = new EventEmitter();
+    const processLike = makeProcessLike(emitter, process.cwd());
+    const spawnEngine: SpawnEngine = (command, args, options) => {
+      child = spawn(command, [...args], options);
+      return child;
+    };
+    const script =
+      'require("node:fs").writeFileSync(process.argv[1], "ready");setInterval(() => {}, 1000)';
 
-    const child = runLauncher(['-e', 'console.log("done")'], {
-      devEnginePath: enginePath,
+    const launchPromise = launchNode(["-e", script, readyPath], {
+      processLike,
+      spawnEngine,
     });
+    await waitForFile(readyPath);
+    emitter.emit("SIGTERM");
 
-    const { exitCode } = await collect(child);
-    assert.equal(exitCode, 0);
-
-    // Verify the child process object reports exited
-    assert.ok(child.killed || child.exitCode !== null, 'child should be terminated');
+    const result = await launchPromise;
+    assert.notEqual(result.exitCode, 0);
+    assert.ok(child);
+    assert.ok(child.exitCode !== null || child.signalCode !== null);
   } finally {
+    if (child?.exitCode === null) child.kill();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
