@@ -230,8 +230,8 @@ function isExactObject<const T extends readonly string[]>(
 ): value is Record<T[number], unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     return false;
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
+  const actual = Object.keys(value).sort((a, b) => a.localeCompare(b));
+  const expected = [...keys].sort((a, b) => a.localeCompare(b));
   return (
     actual.length === expected.length &&
     actual.every((key, index) => key === expected[index])

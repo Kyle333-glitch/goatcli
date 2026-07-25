@@ -101,7 +101,7 @@ export function findApprovedEngineEnvironmentKeys(
       keys.add(key);
     }
   }
-  return [...keys].sort();
+  return [...keys].sort((a, b) => a.localeCompare(b));
 }
 
 export function requireReleasePolicyFeature(

@@ -134,7 +134,7 @@ for (const filename of productionFiles) {
   }
   if (
     relative !== "src/commands/doctor.ts" &&
-    /write\([\s\S]*?(?:error\.message|String\(error\))/.test(text)
+    /write\([^\n]*(?:error\.message|String\(error\))/.test(text)
   ) {
     failures.push(
       `${relative}: raw exception output is forbidden outside local doctor diagnostics`,

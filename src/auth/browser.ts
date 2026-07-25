@@ -49,7 +49,7 @@ export function createBrowserOpener(
 }
 
 function windowsExplorerPath(systemRoot: string | undefined): string {
-  const normalized = systemRoot?.replace(/[\\/]+$/, "");
+  const normalized = trimTrailingSeparators(systemRoot ?? "");
   let windowsDirectory: string;
   if (normalized && /^[A-Za-z]:\\Windows$/i.test(normalized)) {
     windowsDirectory = normalized;
@@ -57,6 +57,14 @@ function windowsExplorerPath(systemRoot: string | undefined): string {
     windowsDirectory = "C:\\Windows";
   }
   return path.win32.join(windowsDirectory, "explorer.exe");
+}
+
+function trimTrailingSeparators(value: string): string {
+  let end = value.length;
+  while (end > 0 && (value[end - 1] === "\\" || value[end - 1] === "/")) {
+    end -= 1;
+  }
+  return value.slice(0, end);
 }
 
 function canonicalBrowserUrl(
