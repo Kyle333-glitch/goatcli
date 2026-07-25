@@ -273,3 +273,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
   log.success("All system checks passed successfully.");
   outro("GOAT Doctor found no issues. Your environment is healthy.");
 }
+
+export function formatDiagnosticError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return String(error);
+}

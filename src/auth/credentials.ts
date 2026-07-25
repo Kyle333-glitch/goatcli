@@ -110,7 +110,7 @@ export function createCredentialStore(
     async get() {
       const credentials = await readKeyring();
       if (!credentials) return migrateLegacy();
-      await cleanupLegacy(legacyPath, platform);
+      await cleanupLegacy(legacyPath, platform).catch(() => undefined);
       return credentials;
     },
     async set(credentials) {
@@ -127,7 +127,7 @@ export function createCredentialStore(
         if (error instanceof CredentialStoreError) throw error;
         throw new CredentialStoreError("GOAT_CREDENTIAL_STORE_UNAVAILABLE");
       }
-      await cleanupLegacy(legacyPath, platform);
+      await cleanupLegacy(legacyPath, platform).catch(() => undefined);
     },
     async delete() {
       // Remove plaintext first so a failed cleanup cannot be silently remigrated.
@@ -320,11 +320,8 @@ async function readLegacyFile(path: string): Promise<string | null> {
     }
   } finally {
     bytes.fill(0);
-    try {
-      await handle.close();
-    } catch {
-      throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-    }
+    // A close failure must not mask a meaningful error raised above.
+    await handle?.close().catch(() => undefined);
   }
 }
 

@@ -8,7 +8,7 @@ import type {
   Clock,
   CredentialStore,
 } from "./auth/types.js";
-import { runDoctor } from "./commands/doctor.js";
+import { runDoctor, formatDiagnosticError } from "./commands/doctor.js";
 import { runLogin } from "./commands/login.js";
 import { runLogout } from "./commands/logout.js";
 import { runUsage } from "./commands/usage.js";
@@ -90,7 +90,7 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
     } catch (error) {
       // Doctor is an explicitly local-only diagnostic surface.
       stderr.write(
-        `An error occurred during diagnostics: ${localError(error)}\n`,
+        `An error occurred during diagnostics: ${formatDiagnosticError(error)}\n`,
       );
       exit(1);
     }
@@ -264,10 +264,4 @@ function noopAuthClient(): AuthApiClient {
       };
     },
   };
-}
-
-function localError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  return String(error);
 }

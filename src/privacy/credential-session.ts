@@ -1,3 +1,4 @@
+import { OPAQUE_TOKEN_PATTERN } from "../auth/client.js";
 import type {
   AuthApiClient,
   CredentialStore,
@@ -7,8 +8,6 @@ import type { PrivacyLaunchCredential } from "../engine/launch.js";
 
 export type PrivacyCredentialErrorCode =
   "GOAT_PRIVACY_LOGIN_REQUIRED" | "GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE";
-
-const OPAQUE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 const activeRefresh = new WeakMap<AuthApiClient, Promise<unknown>>();
 
@@ -71,7 +70,10 @@ export async function preparePrivacyCredential(
     throw new PrivacyCredentialError("GOAT_PRIVACY_LOGIN_REQUIRED");
   }
 
-  const refreshed = await refreshWithMutex(options.client, current.refreshToken);
+  const refreshed = await refreshWithMutex(
+    options.client,
+    current.refreshToken,
+  );
   if (refreshed.status !== "authorized") {
     if (
       refreshed.status === "invalid_grant" ||
@@ -85,7 +87,7 @@ export async function preparePrivacyCredential(
     throw new PrivacyCredentialError("GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE");
   }
 
-  if (!isValidGoatCredentials(refreshed.credentials, now)) {
+  if (!isValidGoatCredentials(refreshed.credentials, now, minimumLifetimeMs)) {
     await discardUnstoredCredential(
       options.client,
       options.store,
@@ -114,8 +116,7 @@ async function refreshWithMutex(
   const pending = activeRefresh.get(client);
   if (pending) {
     const result = (await pending.catch(() => undefined)) as
-      | import("../auth/types.js").PollResult
-      | undefined;
+      import("../auth/types.js").PollResult | undefined;
     if (result?.status === "authorized") {
       return result;
     }
@@ -135,11 +136,18 @@ async function refreshWithMutex(
 function isValidGoatCredentials(
   credentials: GoatCredentials,
   now: number,
+  minimumLifetimeMs: number,
 ): boolean {
-  if (typeof credentials.accessToken !== "string" || !OPAQUE_TOKEN_PATTERN.test(credentials.accessToken)) {
+  if (
+    typeof credentials.accessToken !== "string" ||
+    !OPAQUE_TOKEN_PATTERN.test(credentials.accessToken)
+  ) {
     return false;
   }
-  if (typeof credentials.refreshToken !== "string" || !OPAQUE_TOKEN_PATTERN.test(credentials.refreshToken)) {
+  if (
+    typeof credentials.refreshToken !== "string" ||
+    !OPAQUE_TOKEN_PATTERN.test(credentials.refreshToken)
+  ) {
     return false;
   }
   if (credentials.tokenType !== "Bearer") {
@@ -149,7 +157,7 @@ function isValidGoatCredentials(
   const refreshExpiresAt = Date.parse(credentials.refreshTokenExpiresAt);
   if (
     !Number.isSafeInteger(accessExpiresAt) ||
-    accessExpiresAt <= now ||
+    accessExpiresAt <= now + minimumLifetimeMs ||
     !Number.isSafeInteger(refreshExpiresAt) ||
     refreshExpiresAt <= now
   ) {

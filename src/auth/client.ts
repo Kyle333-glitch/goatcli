@@ -20,9 +20,10 @@ import type {
   UsageWindowSummary,
 } from "./types.js";
 
+export const OPAQUE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
 const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_RESPONSE_BYTES = 16 * 1024;
-const OPAQUE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const USER_CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/;
 const AMOUNT_PATTERN = /^\d{1,20}$/;
 const JSON_CONTENT_TYPE_PATTERN = /^application\/json(?:\s*;|$)/i;
@@ -189,7 +190,24 @@ export function createAuthApiClient(baseUrl: URL): AuthApiClient {
           accessToken,
         });
         return parseUsageSummaryResponse(response);
-      } catch {
+      } catch (error) {
+        if (error instanceof ControlPlaneClientError) {
+          if (
+            error.code === "unexpected_response" ||
+            error.code === "response_too_large"
+          ) {
+            return {
+              status: "unexpected_response",
+              message: "GOAT control plane returned an unexpected response.",
+            };
+          }
+          if (error.code === "request_timeout") {
+            return {
+              status: "network_error",
+              message: "GOAT control plane request timed out.",
+            };
+          }
+        }
         return {
           status: "network_error",
           message: "Unable to reach GOAT control plane.",

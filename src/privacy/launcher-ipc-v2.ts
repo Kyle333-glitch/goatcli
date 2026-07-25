@@ -23,7 +23,8 @@ export async function waitForLauncherIpcV2Activation(input: {
       let chunk: Uint8Array | null;
       try {
         chunk = await input.transport.read(input.signal);
-      } catch {
+      } catch (error) {
+        if (error instanceof LauncherIpcError) throw error;
         throw new LauncherIpcError(
           input.signal.aborted
             ? "LAUNCHER_IPC_CANCELLED"
@@ -33,11 +34,12 @@ export async function waitForLauncherIpcV2Activation(input: {
       if (chunk === null) {
         throw new LauncherIpcError("LAUNCHER_IPC_PEER_CLOSED");
       }
+      if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0) {
+        throw new LauncherIpcError("LAUNCHER_IPC_MESSAGE_INVALID");
+      }
       if (
-        !(chunk instanceof Uint8Array) ||
-        chunk.byteLength === 0 ||
         buffered.byteLength + chunk.byteLength >
-          LAUNCHER_IPC_LAZY_ACTIVATION_V2.byteLength
+        LAUNCHER_IPC_LAZY_ACTIVATION_V2.byteLength
       ) {
         chunk.fill(0);
         throw new LauncherIpcError("LAUNCHER_IPC_MESSAGE_INVALID");

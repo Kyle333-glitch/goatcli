@@ -78,6 +78,7 @@ function canonicalBrowserUrl(
   )
     return null;
 
+  if (parsed.origin === "null") return null;
   const candidateOrigin = new URL(parsed.origin);
   if (!isAllowedControlPlaneUrl(candidateOrigin)) return null;
 

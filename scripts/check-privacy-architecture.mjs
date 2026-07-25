@@ -10,6 +10,7 @@ const productionFiles = walk(path.join(root, "src")).filter(
     !file.endsWith(".test.ts") &&
     !file.endsWith(".spec.ts"),
 );
+const httpNetworkModules = new Set(["node:http", "node:https"]);
 const networkModules = new Set([
   "node:http",
   "node:https",
@@ -52,6 +53,15 @@ for (const filename of productionFiles) {
           `${relative}: only src/auth/client.ts may import network primitives (${moduleName})`,
         );
       }
+      if (
+        networkModules.has(moduleName) &&
+        relative === "src/auth/client.ts" &&
+        !httpNetworkModules.has(moduleName)
+      ) {
+        failures.push(
+          `${relative}: auth client may only import node:http and node:https (found ${moduleName})`,
+        );
+      }
       if (bannedModulePattern.test(moduleName)) {
         failures.push(
           `${relative}: telemetry or error-reporting dependency is forbidden (${moduleName})`,
@@ -62,6 +72,16 @@ for (const filename of productionFiles) {
       ts.isCallExpression(node) &&
       ts.isIdentifier(node.expression) &&
       node.expression.text === "fetch"
+    ) {
+      failures.push(`${relative}: direct fetch calls are forbidden`);
+    }
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      ts.isIdentifier(node.expression.name) &&
+      node.expression.expression.text === "globalThis" &&
+      node.expression.name.text === "fetch"
     ) {
       failures.push(`${relative}: direct fetch calls are forbidden`);
     }
@@ -114,7 +134,7 @@ for (const filename of productionFiles) {
   }
   if (
     relative !== "src/commands/doctor.ts" &&
-    /write\([^\n]*(?:error\.message|String\(error\))/.test(text)
+    /write\([\s\S]*?(?:error\.message|String\(error\))/.test(text)
   ) {
     failures.push(
       `${relative}: raw exception output is forbidden outside local doctor diagnostics`,
@@ -128,6 +148,8 @@ const packageJson = JSON.parse(
 for (const name of Object.keys({
   ...packageJson.dependencies,
   ...packageJson.devDependencies,
+  ...packageJson.optionalDependencies,
+  ...packageJson.peerDependencies,
 })) {
   if (bannedModulePattern.test(name))
     failures.push(`package.json: forbidden dependency ${name}`);
@@ -141,10 +163,14 @@ requireText(
   "auth client must use the generated release policy",
 );
 if (!/['"]?controlPlaneOrigin['"]?\s*:\s*null\s*,/.test(releasePolicy)) {
-  failures.push("the internal launcher policy must ship without a production origin");
+  failures.push(
+    "the internal launcher policy must ship without a production origin",
+  );
 }
 if (client.includes("APPROVED_PRODUCTION_ORIGIN"))
-  failures.push("src/auth/client.ts: duplicated production origin is forbidden");
+  failures.push(
+    "src/auth/client.ts: duplicated production origin is forbidden",
+  );
 const approvedRoutePaths = [
   "/v1/auth/device/sessions",
   "/v1/auth/device/token",

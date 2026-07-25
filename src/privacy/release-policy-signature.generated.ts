@@ -4,5 +4,4 @@
 export const GOAT_RELEASE_POLICY_SIGNATURE = {
   status: "unsigned-internal",
   keyId: null,
-} as const
-
+} as const;
