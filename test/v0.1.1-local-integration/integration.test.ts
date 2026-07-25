@@ -159,7 +159,12 @@ test("engine receives the exact working directory without launcher inspection", 
     });
 
     assert.equal(result.exitCode, 0);
-    assert.equal(fs.readFileSync(outputPath, "utf8"), workDir);
+    // macOS /tmp is a symlink to /private/tmp; compare realpaths so the
+    // assertion is portable across platform temp directory layouts.
+    assert.equal(
+      fs.realpathSync(fs.readFileSync(outputPath, "utf8")),
+      fs.realpathSync(workDir),
+    );
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
