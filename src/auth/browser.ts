@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import type { BrowserOpener } from "./types.js";
 import {
   canonicalDeviceAuthorizationUrl,
@@ -49,11 +50,13 @@ export function createBrowserOpener(
 
 function windowsExplorerPath(systemRoot: string | undefined): string {
   const normalized = systemRoot?.replace(/[\\/]+$/, "");
-  const windowsDirectory =
-    normalized && /^[A-Za-z]:\\Windows$/i.test(normalized)
-      ? normalized
-      : "C:\\Windows";
-  return `${windowsDirectory}\\explorer.exe`;
+  let windowsDirectory: string;
+  if (normalized && /^[A-Za-z]:\\Windows$/i.test(normalized)) {
+    windowsDirectory = normalized;
+  } else {
+    windowsDirectory = "C:\\Windows";
+  }
+  return path.win32.join(windowsDirectory, "explorer.exe");
 }
 
 function canonicalBrowserUrl(

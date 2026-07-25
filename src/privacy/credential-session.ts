@@ -8,6 +8,10 @@ import type { PrivacyLaunchCredential } from "../engine/launch.js";
 export type PrivacyCredentialErrorCode =
   "GOAT_PRIVACY_LOGIN_REQUIRED" | "GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE";
 
+const OPAQUE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+const activeRefresh = new WeakMap<AuthApiClient, Promise<unknown>>();
+
 export class PrivacyCredentialError extends Error {
   readonly code: PrivacyCredentialErrorCode;
 
@@ -67,12 +71,7 @@ export async function preparePrivacyCredential(
     throw new PrivacyCredentialError("GOAT_PRIVACY_LOGIN_REQUIRED");
   }
 
-  let refreshed;
-  try {
-    refreshed = await options.client.refresh(current.refreshToken);
-  } catch {
-    throw new PrivacyCredentialError("GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE");
-  }
+  const refreshed = await refreshWithMutex(options.client, current.refreshToken);
   if (refreshed.status !== "authorized") {
     if (
       refreshed.status === "invalid_grant" ||
@@ -83,6 +82,15 @@ export async function preparePrivacyCredential(
       await deleteInvalidCredentials(options.store);
       throw new PrivacyCredentialError("GOAT_PRIVACY_LOGIN_REQUIRED");
     }
+    throw new PrivacyCredentialError("GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE");
+  }
+
+  if (!isValidGoatCredentials(refreshed.credentials, now)) {
+    await discardUnstoredCredential(
+      options.client,
+      options.store,
+      refreshed.credentials.refreshToken,
+    );
     throw new PrivacyCredentialError("GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE");
   }
 
@@ -97,6 +105,57 @@ export async function preparePrivacyCredential(
     throw new PrivacyCredentialError("GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE");
   }
   return encodeCredential(refreshed.credentials);
+}
+
+async function refreshWithMutex(
+  client: AuthApiClient,
+  refreshToken: string,
+): Promise<import("../auth/types.js").PollResult> {
+  const pending = activeRefresh.get(client);
+  if (pending) {
+    const result = (await pending.catch(() => undefined)) as
+      | import("../auth/types.js").PollResult
+      | undefined;
+    if (result?.status === "authorized") {
+      return result;
+    }
+  }
+  const operation = client.refresh(refreshToken).catch(() => ({
+    status: "network_error" as const,
+    message: "Unable to refresh GOAT privacy credential.",
+  }));
+  activeRefresh.set(client, operation);
+  try {
+    return await operation;
+  } finally {
+    activeRefresh.delete(client);
+  }
+}
+
+function isValidGoatCredentials(
+  credentials: GoatCredentials,
+  now: number,
+): boolean {
+  if (typeof credentials.accessToken !== "string" || !OPAQUE_TOKEN_PATTERN.test(credentials.accessToken)) {
+    return false;
+  }
+  if (typeof credentials.refreshToken !== "string" || !OPAQUE_TOKEN_PATTERN.test(credentials.refreshToken)) {
+    return false;
+  }
+  if (credentials.tokenType !== "Bearer") {
+    return false;
+  }
+  const accessExpiresAt = Date.parse(credentials.accessTokenExpiresAt);
+  const refreshExpiresAt = Date.parse(credentials.refreshTokenExpiresAt);
+  if (
+    !Number.isSafeInteger(accessExpiresAt) ||
+    accessExpiresAt <= now ||
+    !Number.isSafeInteger(refreshExpiresAt) ||
+    refreshExpiresAt <= now
+  ) {
+    return false;
+  }
+  return true;
 }
 
 async function discardUnstoredCredential(
