@@ -38,7 +38,7 @@ jobs:
         run: node -p "process.platform + '-' + process.arch + ' node-' + process.versions.node"
 
       - name: Install locked dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Check formatting
         run: npm run format:check
