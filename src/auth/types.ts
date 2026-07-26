@@ -1,7 +1,7 @@
 export interface GoatCredentials {
   accessToken: string;
   refreshToken: string;
-  tokenType: string;
+  tokenType: "Bearer";
   accessTokenExpiresAt: string;
   refreshTokenExpiresAt: string;
 }
@@ -19,14 +19,23 @@ export type PollResult =
   | { status: "authorized"; credentials: GoatCredentials }
   | { status: "pending"; intervalSeconds?: number }
   | { status: "slow_down"; retryAfterSeconds: number }
-  | { status: "denied" | "cancelled" | "expired" | "invalid_grant" | "revoked" | "replay_detected" | "network_error"; message: string };
+  | {
+      status:
+        | "denied"
+        | "cancelled"
+        | "expired"
+        | "invalid_grant"
+        | "revoked"
+        | "replay_detected"
+        | "network_error";
+      message: string;
+    };
 
-export type UsageTier = 'free' | 'regular' | 'premium' | 'none';
-export type UsageAccountStatus = 'active' | 'no_entitlement' | 'quota_suspended' | 'quota_revoked';
+export type UsageTier = "free" | "regular" | "premium" | "none";
+export type UsageAccountStatus =
+  "active" | "no_entitlement" | "quota_suspended" | "quota_revoked";
 
 export interface UsageAccountSummary {
-  displayName: string | null;
-  email: string | null;
   tier: UsageTier;
   status: UsageAccountStatus;
 }
@@ -54,14 +63,13 @@ export interface UsageAmountBreakdown {
 }
 
 export interface UsageRecentTotal extends UsageAmountBreakdown {
-  label: string;
+  label: "24h" | "7d";
   windowSeconds: number;
 }
 
 export interface UsageSummaryResponse {
-  version: string;
+  version: "v0.3.2";
   generatedAt: string;
-  requestId: string | null;
   account: UsageAccountSummary;
   quota: UsageQuotaSummary;
   window: UsageWindowSummary;
@@ -70,8 +78,15 @@ export interface UsageSummaryResponse {
 }
 
 export type UsageSummaryResult =
-  | { status: 'ok'; summary: UsageSummaryResponse }
-  | { status: 'unauthorized' | 'network_error' | 'server_error' | 'unexpected_response'; message: string };
+  | { status: "ok"; summary: UsageSummaryResponse }
+  | {
+      status:
+        | "unauthorized"
+        | "network_error"
+        | "server_error"
+        | "unexpected_response";
+      message: string;
+    };
 
 export interface AuthApiClient {
   createDeviceSession(): Promise<DeviceSessionResponse>;

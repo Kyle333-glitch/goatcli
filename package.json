@@ -1,28 +1,59 @@
 {
   "name": "goatcli",
-  "version": "0.0.7",
-  "description": "GOAT public npm launcher",
+  "version": "0.3.2",
+  "description": "Privacy-bounded public launcher for GOAT",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "goat": "./dist/index.js"
   },
   "type": "module",
+  "files": [
+    "dist/",
+    "README.md",
+    "PRIVACY.md",
+    "LICENSE",
+    "NOTICE"
+  ],
   "scripts": {
-    "build": "tsc",
-    "test": "npm run build && node --import tsx --test \"src/**/*.test.ts\" \"test/**/*.test.ts\""
+    "clean": "node ./scripts/clean-dist.mjs",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "format:check": "prettier --check package.json tsconfig.json tsconfig.build.json README.md PRIVACY.md 04-cli-implementation-report.md \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.mjs\" \".github/workflows/*.yml\"",
+    "lint": "npm run privacy:check",
+    "test:privacy": "npm run build && node --import tsx --test \"src/auth/*.test.ts\" \"src/commands/*.test.ts\" \"src/engine/privacy-*.test.ts\" \"src/privacy/*.test.ts\"",
+    "test:cross-repo": "node ./scripts/test-cross-repo.mjs",
+    "privacy:check": "node ./scripts/check-privacy-architecture.mjs",
+    "test": "npm run build && node --import tsx --test \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
+    "verify:package": "npm run build && npm run privacy:check && node ./scripts/verify-package.mjs",
+    "prepublishOnly": "npm run format:check && npm run typecheck && npm test && npm run verify:package"
   },
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kyle333-glitch/goatcli.git"
+  },
+  "keywords": [
+    "goat",
+    "coding-agent",
+    "cli"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "dependencies": {
     "@clack/prompts": "^0.9.1",
     "@napi-rs/keyring": "1.3.0",
     "execa": "^9.3.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^24.13.3",
+    "prettier": "^3.9.5",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=24.16.0"
   }
 }

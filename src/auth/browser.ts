@@ -1,24 +1,44 @@
-import { spawn } from 'node:child_process';
-import type { BrowserOpener } from './types.js';
-import { isAllowedControlPlaneUrl } from './client.js';
+import { spawn } from "node:child_process";
+import path from "node:path";
+import type { BrowserOpener } from "./types.js";
+import {
+  canonicalDeviceAuthorizationUrl,
+  isAllowedControlPlaneUrl,
+} from "./client.js";
 
 export interface SpawnLike {
-  (command: string, args: readonly string[], options: { detached: boolean; stdio: 'ignore'; windowsHide: boolean }): { unref(): void };
+  (
+    command: string,
+    args: readonly string[],
+    options: { detached: boolean; stdio: "ignore"; windowsHide: boolean },
+  ): { unref(): void };
 }
 
-export function createBrowserOpener(platform: NodeJS.Platform = process.platform, spawnImpl: SpawnLike = spawn): BrowserOpener {
+export function createBrowserOpener(
+  platform: NodeJS.Platform = process.platform,
+  spawnImpl: SpawnLike = spawn,
+  expectedOrigin?: URL,
+  systemRoot: string | undefined = process.env.SystemRoot,
+): BrowserOpener {
   return {
-    async open(url) {
-      const parsed = new URL(url);
-      if (!isAllowedControlPlaneUrl(parsed)) return false;
+    async open(value) {
+      const canonicalUrl = canonicalBrowserUrl(value, expectedOrigin);
+      if (!canonicalUrl) return false;
+
       const command =
-        platform === 'win32' ? `${process.env.SystemRoot ?? 'C:\\Windows'}\\explorer.exe` :
-        platform === 'darwin' ? '/usr/bin/open' :
-        platform === 'linux' || platform === 'freebsd' ? 'xdg-open' :
-        null;
+        platform === "win32"
+          ? windowsExplorerPath(systemRoot)
+          : platform === "darwin"
+            ? "/usr/bin/open"
+            : null;
       if (!command) return false;
+
       try {
-        const child = spawnImpl(command, [parsed.toString()], { detached: true, stdio: 'ignore', windowsHide: true });
+        const child = spawnImpl(command, [canonicalUrl], {
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+        });
         child.unref();
         return true;
       } catch {
@@ -26,4 +46,56 @@ export function createBrowserOpener(platform: NodeJS.Platform = process.platform
       }
     },
   };
+}
+
+function windowsExplorerPath(systemRoot: string | undefined): string {
+  const normalized = trimTrailingSeparators(systemRoot ?? "");
+  let windowsDirectory: string;
+  if (normalized && /^[A-Za-z]:\\Windows$/i.test(normalized)) {
+    windowsDirectory = normalized;
+  } else {
+    windowsDirectory = "C:\\Windows";
+  }
+  return path.win32.join(windowsDirectory, "explorer.exe");
+}
+
+function trimTrailingSeparators(value: string): string {
+  let end = value.length;
+  while (end > 0 && (value[end - 1] === "\\" || value[end - 1] === "/")) {
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
+function canonicalBrowserUrl(
+  value: string,
+  expectedOrigin?: URL,
+): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+  if (
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    parsed.pathname !== "/auth/device"
+  )
+    return null;
+
+  if (parsed.origin === "null") return null;
+  const candidateOrigin = new URL(parsed.origin);
+  if (!isAllowedControlPlaneUrl(candidateOrigin)) return null;
+
+  try {
+    const canonical = canonicalDeviceAuthorizationUrl(
+      expectedOrigin ?? candidateOrigin,
+    );
+    return parsed.toString() === canonical ? canonical : null;
+  } catch {
+    return null;
+  }
 }

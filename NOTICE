@@ -1,0 +1,11 @@
+goatcli
+Copyright (c) 2026 GOAT Contributors
+
+The MIT license in LICENSE applies only to the public goatcli launcher source.
+The private goat-engine, the private goat-control-plane, and distributed GOAT
+engine binaries are separate works and are not covered by this MIT license.
+No license to those separate works is granted by this package.
+
+Third-party packages used by goatcli remain subject to their own license terms.
+Their package metadata and license files are available through the npm dependency
+tree installed with goatcli.
