@@ -1113,9 +1113,14 @@ function reconstructedStateRecord(
     (maximum, entry) => Math.max(maximum, entry.record.releaseSequence),
     0,
   );
+  // When the checkpoint chain is empty, the reconstructed state must be
+  // consistent with that empty checkpoint. Using the receipt metadata here
+  // would create a state whose trusted metadata versions disagree with the
+  // checkpoint, which later causes assertStateCheckpoint to fail. Re-derive
+  // the trusted metadata from the network on the next update instead.
   const trustedMetadata =
     checkpoints.head.generation === 0
-      ? (reconstruction?.trustedMetadata ?? emptyTrustedMetadataState())
+      ? emptyTrustedMetadataState()
       : checkpoints.trustedMetadata;
   const knownReleases = reconstruction?.knownReleases ?? [];
   const receiptDigests = reconstruction?.receiptDigests ?? [];
