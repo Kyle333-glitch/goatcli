@@ -3,8 +3,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 import type { LauncherVersion } from "./engine/contract.js";
 
-export const FALLBACK_LAUNCHER_VERSION: LauncherVersion = "0.3.2";
+export const FALLBACK_LAUNCHER_VERSION: LauncherVersion = "0.4.0";
+export const GOAT_PRODUCT_VERSION = "0.4.0" as const;
+export const GOAT_ENGINE_VERSION = "0.4.0" as const;
+export const OPENCODE_BASELINE_VERSION = "1.17.11" as const;
 export const ENGINE_CONTRACT_VERSION: LauncherVersion = "0.0.6";
+export const PRIVACY_ACTIVATION_PROTOCOL = "GOATIPC2" as const;
+export const AUTHENTICATED_FRAME_PROTOCOL = "GOATIPC1" as const;
 
 export function getLauncherVersion(): LauncherVersion {
   const filename = fileURLToPath(import.meta.url);

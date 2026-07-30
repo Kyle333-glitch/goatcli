@@ -154,9 +154,11 @@ export function validateEngine(
 }
 
 export function parseManifest(raw: Buffer | string): EngineManifest {
+  const text = raw.toString();
+  assertNoDuplicateObjectKeys(text);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw.toString());
+    parsed = JSON.parse(text);
   } catch {
     throw invalidManifest("Manifest is not valid JSON.");
   }
@@ -453,6 +455,89 @@ function parseManifestSignature(
     };
   }
   throw invalidManifest("Manifest signature fields are invalid.");
+}
+
+/**
+ * Scans JSON text for duplicate object keys before JSON.parse silently resolves them.
+ * Mirrors the v0.4 parseCanonicalJson invariant that manifests are canonical before
+ * signature verification. This is additive hardening (D-7); it does not weaken
+ * signature verification, which remains the authoritative trust gate.
+ */
+function assertNoDuplicateObjectKeys(text: string): void {
+  let index = 0;
+  const length = text.length;
+  const keyScopes: Set<string>[] = [];
+  while (index < length) {
+    const character = text[index];
+    if (
+      character === " " ||
+      character === "\t" ||
+      character === "\n" ||
+      character === "\r"
+    ) {
+      index += 1;
+      continue;
+    }
+    if (character === "{") {
+      keyScopes.push(new Set<string>());
+      index += 1;
+      continue;
+    }
+    if (character === "}") {
+      keyScopes.pop();
+      index += 1;
+      continue;
+    }
+    if (
+      character === "[" ||
+      character === "]" ||
+      character === "," ||
+      character === ":"
+    ) {
+      index += 1;
+      continue;
+    }
+    if (character === '"') {
+      const [decoded, nextIndex] = readJsonStringToken(text, index);
+      index = nextIndex;
+      while (index < length && /\s/.test(text[index])) index += 1;
+      if (index < length && text[index] === ":") {
+        const currentScope = keyScopes[keyScopes.length - 1];
+        if (currentScope !== undefined) {
+          if (currentScope.has(decoded)) {
+            throw invalidManifest(`Duplicate manifest key: "${decoded}".`);
+          }
+          currentScope.add(decoded);
+        }
+        index += 1;
+      }
+      continue;
+    }
+    index += 1;
+  }
+}
+
+function readJsonStringToken(text: string, start: number): [string, number] {
+  let index = start + 1;
+  const length = text.length;
+  while (index < length) {
+    const character = text[index];
+    if (character === "\\") {
+      index += 2;
+      continue;
+    }
+    if (character === '"') {
+      const token = text.substring(start, index + 1);
+      try {
+        const decoded = JSON.parse(token) as string;
+        return [decoded, index + 1];
+      } catch {
+        throw invalidManifest("Manifest contains a malformed JSON string.");
+      }
+    }
+    index += 1;
+  }
+  throw invalidManifest("Unterminated JSON string in manifest.");
 }
 
 export function computeFileChecksum(

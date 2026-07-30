@@ -3,7 +3,7 @@ export type EngineVersion = string;
 export type GoatPlatform = "win32" | "darwin";
 export type GoatArchitecture = "x64" | "arm64";
 export type ExecutablePath = string;
-export type ReleaseChannel = "stable" | "beta" | "dev";
+export type ReleaseChannel = "stable" | "beta" | "development" | "dev";
 
 export interface Checksum {
   algorithm: "sha256";
@@ -73,6 +73,7 @@ export type EngineErrorCode =
   | "GOAT_ENGINE_CHECKSUM_MISMATCH"
   | "GOAT_ENGINE_INCOMPATIBLE"
   | "GOAT_ENGINE_SIGNATURE_INVALID"
+  | "GOAT_ENGINE_RECOVERY_REQUIRED"
   | "GOAT_ENGINE_SPAWN_FAILED"
   | "GOAT_ENGINE_ARGS_TOO_LONG"
   | "GOAT_PRIVACY_AUTH_REQUIRED"
@@ -139,6 +140,10 @@ const SAFE_ENGINE_ERRORS: Record<EngineErrorCode, readonly [string, string]> = {
   GOAT_ENGINE_SIGNATURE_INVALID: [
     "The GOAT engine manifest signature is missing or untrusted.",
     "Reinstall the GOAT engine from an approved GOAT release.",
+  ],
+  GOAT_ENGINE_RECOVERY_REQUIRED: [
+    "The GOAT engine activation state requires safe recovery.",
+    "Run `goat update`; reinstall GOAT if recovery remains unavailable.",
   ],
   GOAT_ENGINE_SPAWN_FAILED: [
     "The GOAT engine could not be started.",

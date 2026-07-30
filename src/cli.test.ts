@@ -10,8 +10,9 @@ import type { EngineManifest, ResolvedEngine } from "./engine/contract.js";
 import type { ProcessLike, SpawnEngine } from "./engine/launch.js";
 import type { EngineFileSystem } from "./engine/validate.js";
 import { engineManifestTrustPolicy } from "./privacy/release-policy.js";
+import type { VerifiedUpdatePolicy } from "./update/updater.js";
 
-test("runCli handles exact launcher-owned version command", async () => {
+test("runCli handles detailed launcher-owned version command without spawning", async () => {
   let output = "";
 
   await runCli({
@@ -27,10 +28,13 @@ test("runCli handles exact launcher-owned version command", async () => {
     },
   });
 
-  assert.equal(output, "0.3.2\n");
+  assert.match(output, /^GOAT product: 0\.4\.0$/m);
+  assert.match(output, /^goatcli launcher: 0\.4\.0$/m);
+  assert.match(output, /^GOAT engine: unavailable$/m);
+  assert.match(output, /^Verified updates: disabled /m);
 });
 
-test("runCli handles version command with trailing arguments", async () => {
+test("runCli preserves compact version flags with trailing arguments", async () => {
   let output = "";
 
   await runCli({
@@ -46,7 +50,68 @@ test("runCli handles version command with trailing arguments", async () => {
     },
   });
 
-  assert.equal(output, "0.3.2\n");
+  assert.equal(output, "0.4.0\n");
+});
+
+test("runCli owns update, fails closed without production trust, and never spawns", async () => {
+  let output = "";
+  let exitCode: number | undefined;
+  await assert.rejects(
+    () =>
+      runCli({
+        argv: ["update"],
+        updatePolicy: null,
+        stderr: {
+          write(chunk: string | Uint8Array) {
+            output += chunk.toString();
+            return true;
+          },
+        },
+        spawnEngine: () => {
+          throw new Error("update must not spawn the engine");
+        },
+        exit(code?: number): never {
+          exitCode = code;
+          throw new Error("exit");
+        },
+      }),
+    /exit/,
+  );
+  assert.equal(exitCode, 1);
+  assert.match(output, /GOAT_UPDATE_DISABLED/);
+});
+
+test("runCli passes only an exact channel to the verified updater", async () => {
+  let output = "";
+  const policy = {} as VerifiedUpdatePolicy;
+  await runCli({
+    argv: ["update", "--channel", "beta"],
+    updatePolicy: policy,
+    stdout: {
+      write(chunk: string | Uint8Array) {
+        output += chunk.toString();
+        return true;
+      },
+    },
+    updateRunner: async (options) => {
+      assert.equal(options.policy, policy);
+      assert.equal(options.requestedChannel, "beta");
+      return {
+        status: "updated",
+        channel: "beta",
+        productVersion: "0.4.0-beta.2",
+        goatEngineVersion: "0.4.0-beta.2",
+        releaseSequence: 2,
+        activationGeneration: 2,
+        recoveredBeforeUpdate: false,
+        deferredCleanupPaths: [],
+      };
+    },
+    spawnEngine: () => {
+      throw new Error("update must not spawn the engine");
+    },
+  });
+  assert.equal(output, "GOAT updated to 0.4.0-beta.2 (beta, release 2).\n");
 });
 
 test("runCli forwards non-launcher-owned arguments to the engine unchanged", async () => {
@@ -128,7 +193,6 @@ test("engine-local privacy and absent update/download contexts never use launche
     ["privacy", "telemetry", "on"],
     ["privacy", "telemetry", "off"],
     ["privacy", "telemetry", "reset"],
-    ["update", "SOURCE_CODE_SECRET_4JK2"],
     ["download", "C:\\PATH_SECRET_3HT6\\PROMPT_SECRET_7QX9.bin"],
   ]) {
     const child = new FakeChild();

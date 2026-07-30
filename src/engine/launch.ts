@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
 import process from "node:process";
 import { Readable, Writable } from "node:stream";
 import {
@@ -12,6 +13,7 @@ import {
   type ValidateEngineOptions,
 } from "./validate.js";
 import {
+  getAppDataDir,
   getEnginePath,
   toResolvedEngine,
   type EnginePathOptions,
@@ -32,6 +34,9 @@ import {
 import { createNodeLauncherIpcTransport } from "../privacy/node-transport.js";
 import { waitForLauncherIpcV2Activation } from "../privacy/launcher-ipc-v2.js";
 import { approvedEngineEnvironmentKeys } from "../privacy/release-policy.js";
+import type { ActivationSecurityPolicy } from "../update/activation.js";
+import { UpdateError } from "../update/errors.js";
+import { inspectInstalledEngine } from "../update/installed.js";
 
 export interface EngineLaunchResult {
   exitCode: number;
@@ -95,6 +100,7 @@ export interface LaunchEngineOptions
   processTerminator?: ProcessTerminatorCommand;
   resolvedEngine?: ResolvedEngine;
   privacyCredential?: PrivacyLaunchCredential;
+  installedUpdatePolicy?: ActivationSecurityPolicy;
   privacyCredentialProvider?: () => Promise<
     PrivacyLaunchCredential | undefined
   >;
@@ -169,27 +175,70 @@ export async function launchEngine(
   validatePrivacyCredential(privacyMode, options.privacyCredential);
 
   const cwd = options.cwd ?? processLike.cwd();
-  const resolved =
-    options.resolvedEngine ??
-    toResolvedEngine(
-      getEnginePath({
-        env: options.env ?? processLike.env,
-        platform: options.platform ?? processLike.platform,
-        architecture: options.architecture ?? processLike.arch,
-        appDataDir: options.appDataDir,
-        homeDir: options.homeDir,
-        releaseChannel: options.releaseChannel,
-      }),
+  let resolved: ResolvedEngine;
+  let engineIntegrity: EngineIntegrityStatus;
+  if (!options.resolvedEngine && options.installedUpdatePolicy) {
+    try {
+      const appDataDirectory =
+        options.appDataDir ??
+        getAppDataDir({
+          env: options.env ?? processLike.env,
+          platform: options.platform ?? processLike.platform,
+          homeDir: options.homeDir,
+        });
+      const installed = await inspectInstalledEngine(
+        appDataDirectory,
+        options.installedUpdatePolicy,
+      );
+      if (installed) {
+        resolved = {
+          executablePath: installed.active.candidate.executablePath,
+          manifestPath: path.join(
+            installed.active.slotRoot,
+            "goat-engine.json",
+          ),
+          source: "local-install",
+          releaseChannel: installed.active.activation.record.channel,
+          platform: installed.active.activation.record.platform,
+          architecture: installed.active.activation.record.architecture,
+          developmentOverride: false,
+        };
+        engineIntegrity = "verified";
+      } else {
+        ({ resolved, engineIntegrity } = resolveLegacyEngine(
+          options,
+          processLike,
+        ));
+      }
+    } catch (error) {
+      if (error instanceof UpdateError) {
+        throw new EngineContractError(
+          "GOAT_ENGINE_RECOVERY_REQUIRED",
+          "The v0.4 engine activation could not be validated safely.",
+          "Run `goat update`; reinstall GOAT if recovery remains unavailable.",
+        );
+      }
+      throw error;
+    }
+  } else if (options.resolvedEngine) {
+    const validated = validateEngine(
+      options.resolvedEngine,
+      options.launcherVersion,
+      { fs: options.fs },
     );
-  const validated = validateEngine(resolved, options.launcherVersion, {
-    fs: options.fs,
-  });
+    resolved = validated.resolved;
+    engineIntegrity = validated.manifest
+      ? "verified"
+      : "development_unverified";
+  } else {
+    ({ resolved, engineIntegrity } = resolveLegacyEngine(options, processLike));
+  }
   const engineEnvironment = createEngineEnvironment(
     options.env ?? processLike.env,
-    validated.resolved.platform,
+    resolved.platform,
   );
 
-  return launchValidatedEngine(validated.resolved, options.args, {
+  return launchValidatedEngine(resolved, options.args, {
     cwd,
     environment: engineEnvironment,
     spawnEngine: options.spawnEngine,
@@ -200,9 +249,7 @@ export async function launchEngine(
         ? undefined
         : {
             mode: privacyMode === "lazy" ? "lazy" : "eager",
-            engineIntegrity: validated.manifest
-              ? "verified"
-              : "development_unverified",
+            engineIntegrity,
             credentialStore:
               privacyMode === "preview"
                 ? "not_checked"
@@ -216,6 +263,32 @@ export async function launchEngine(
             launcherPid: processLike.pid,
           },
   });
+}
+
+function resolveLegacyEngine(
+  options: LaunchEngineOptions,
+  processLike: ProcessLike,
+): {
+  readonly resolved: ResolvedEngine;
+  readonly engineIntegrity: EngineIntegrityStatus;
+} {
+  const resolved = toResolvedEngine(
+    getEnginePath({
+      env: options.env ?? processLike.env,
+      platform: options.platform ?? processLike.platform,
+      architecture: options.architecture ?? processLike.arch,
+      appDataDir: options.appDataDir,
+      homeDir: options.homeDir,
+      releaseChannel: options.releaseChannel,
+    }),
+  );
+  const validated = validateEngine(resolved, options.launcherVersion, {
+    fs: options.fs,
+  });
+  return {
+    resolved: validated.resolved,
+    engineIntegrity: validated.manifest ? "verified" : "development_unverified",
+  };
 }
 
 export function launchValidatedEngine(
