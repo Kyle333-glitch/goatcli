@@ -494,14 +494,20 @@ async function assertSameVolume(
   destinationParent: string,
 ): Promise<void> {
   try {
-    const sourceStats = await stat(source);
-    const destinationStats = await stat(destinationParent);
-    const sourceCanonical = await realpath(source);
+    const [sourceStats, destinationStats, sourceCanonical] = await Promise.all([
+      lstat(source),
+      lstat(destinationParent),
+      realpath(source),
+    ]);
+    const canonicalStats = await lstat(sourceCanonical);
     if (
       !sourceStats.isDirectory() ||
+      sourceStats.isSymbolicLink() ||
       !destinationStats.isDirectory() ||
+      destinationStats.isSymbolicLink() ||
       sourceStats.dev !== destinationStats.dev ||
-      path.resolve(sourceCanonical) !== path.resolve(source)
+      sourceStats.dev !== canonicalStats.dev ||
+      sourceStats.ino !== canonicalStats.ino
     ) {
       throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED");
     }
