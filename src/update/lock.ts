@@ -327,14 +327,21 @@ async function ensureLockDatabaseFile(
       throw lockInvalid(error);
     }
   }
-  const stats = await lstat(lockPath).catch((error) => {
+  const stats = await lstat(lockPath, { bigint: true }).catch((error) => {
     throw lockInvalid(error);
   });
-  assertSafeDatabaseStats(stats, true);
+  assertSafeBigIntDatabaseStats(stats, true);
   const canonical = await realpath(lockPath).catch((error) => {
     throw lockInvalid(error);
   });
-  if (!samePath(canonical, lockPath)) throw lockInvalid();
+  const canonicalStats = await lstat(canonical, { bigint: true }).catch(
+    (error) => {
+      throw lockInvalid(error);
+    },
+  );
+  if (!sameIdentity(identity(stats), identity(canonicalStats))) {
+    throw lockInvalid();
+  }
 }
 
 async function openLockDatabase(
@@ -586,10 +593,17 @@ async function assertDatabasePathBound(
   });
   assertSafeBigIntDatabaseStats(pathStats, allowEmpty);
   assertSafeBigIntDatabaseStats(handleStats, allowEmpty);
+  let canonicalStats: BigIntStats;
+  try {
+    canonicalStats = await lstat(canonical, { bigint: true });
+    assertSafeBigIntDatabaseStats(canonicalStats, allowEmpty);
+  } catch (error) {
+    throw lockInvalid(error);
+  }
   if (
     !sameIdentity(opened.fileIdentity, identity(pathStats)) ||
     !sameIdentity(opened.fileIdentity, identity(handleStats)) ||
-    !samePath(canonical, opened.lockPath)
+    !sameIdentity(opened.fileIdentity, identity(canonicalStats))
   ) {
     throw lockInvalid();
   }
@@ -697,14 +711,6 @@ function identity(stats: {
 
 function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
   return left.device === right.device && left.inode === right.inode;
-}
-
-function samePath(left: string, right: string): boolean {
-  const normalizedLeft = path.resolve(left);
-  const normalizedRight = path.resolve(right);
-  return process.platform === "win32"
-    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
-    : normalizedLeft === normalizedRight;
 }
 
 function checkedNow(value: number): number {

@@ -214,7 +214,8 @@ async function assertDirectory(directory: string): Promise<void> {
       throw new UpdateError("GOAT_UPDATE_TEMPORARY_FILE_UNSAFE");
     }
     const canonical = await realpath(directory);
-    if (path.resolve(canonical) !== path.resolve(directory)) {
+    const canonicalStats = await lstat(canonical);
+    if (stats.dev !== canonicalStats.dev || stats.ino !== canonicalStats.ino) {
       throw new UpdateError("GOAT_UPDATE_TEMPORARY_FILE_UNSAFE");
     }
   } catch (error) {
