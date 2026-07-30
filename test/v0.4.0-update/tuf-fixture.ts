@@ -160,9 +160,7 @@ export function createTestTufFixture(
       keys: keyMap([...keys.stable, ...keys.beta, ...keys.development]),
       roles: (["stable", "beta", "development"] as const).map((channel) => ({
         name: channel,
-        keyids: keys[channel]
-          .map((key) => key.keyId)
-          .sort(compareStrings),
+        keyids: keys[channel].map((key) => key.keyId).sort(compareStrings),
         threshold: 2,
         terminating: true,
         paths: [`goat-engine/${channel}/*`],
@@ -333,9 +331,7 @@ function keyMap(
 
 function role(keys: readonly TestTufKey[], threshold: number) {
   return {
-    keyids: keys
-      .map((key) => key.keyId)
-      .sort(compareStrings),
+    keyids: keys.map((key) => key.keyId).sort(compareStrings),
     threshold,
   };
 }

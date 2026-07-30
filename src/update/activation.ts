@@ -568,7 +568,6 @@ function boundExecutablePath(held: HeldVerifiedSlot): string {
   return `/proc/${process.pid}/fd/${fd}`;
 }
 
-
 function throwError(code: string, cause?: unknown): never {
   if (cause === undefined) {
     throw new UpdateError(code as any);

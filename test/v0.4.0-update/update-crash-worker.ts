@@ -130,10 +130,7 @@ function isInsideTestRoot(resolved: string): boolean {
   const cwdRoot = path.resolve(process.cwd());
   const relativeToTmp = path.relative(tmpRoot, resolved);
   const relativeToCwd = path.relative(cwdRoot, resolved);
-  if (
-    relativeToTmp.startsWith("..") &&
-    relativeToCwd.startsWith("..")
-  ) {
+  if (relativeToTmp.startsWith("..") && relativeToCwd.startsWith("..")) {
     return false;
   }
   return true;
