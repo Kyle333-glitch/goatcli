@@ -38,8 +38,13 @@ if (
 }
 const appData = path.resolve(rawAppData);
 // Re-validate after canonicalization so any symlink/control-character
-// manipulation introduced by path.resolve is caught before use.
-if (!path.isAbsolute(appData) || /[\r\n\0]/.test(appData)) {
+// manipulation introduced by path.resolve is caught before use. Reject
+// traversal segments that would escape an otherwise absolute path.
+if (
+  !path.isAbsolute(appData) ||
+  /[\r\n\0]/.test(appData) ||
+  appData.split(path.sep).includes("..")
+) {
   process.exit(64);
 }
 const context = {

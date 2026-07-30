@@ -24,12 +24,19 @@ export async function hashFileHandle(
   const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(length, 1)));
   let position = 0;
   while (position < length) {
-    const { bytesRead } = await handle.read(
-      buffer,
-      0,
-      Math.min(buffer.byteLength, length - position),
-      position,
-    );
+    let bytesRead: number;
+    try {
+      ({ bytesRead } = await handle.read(
+        buffer,
+        0,
+        Math.min(buffer.byteLength, length - position),
+        position,
+      ));
+    } catch (error) {
+      throw new UpdateError(errorCode, {
+        cause: error instanceof Error ? error : new Error(String(error)),
+      });
+    }
     if (bytesRead <= 0) {
       throw new UpdateError(errorCode, {
         cause: new Error(`unexpected EOF while hashing ${length} bytes`),

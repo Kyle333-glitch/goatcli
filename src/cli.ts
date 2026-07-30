@@ -107,7 +107,7 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
   const appDataDirectory =
     options.appDataDir ??
     getAppDataDir({
-      env: env ?? options.processLike?.env ?? process.env,
+      env: options.env ?? options.processLike?.env ?? process.env,
       platform:
         options.platform ?? options.processLike?.platform ?? process.platform,
       homeDir: options.homeDir,

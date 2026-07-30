@@ -132,7 +132,7 @@ export async function runVerifiedUpdate(
   try {
     if (!recovered) {
       failed = true;
-      return Promise.reject(new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED"));
+      throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
     }
     return await runLockedUpdate(options, recovered, now);
   } catch (error) {

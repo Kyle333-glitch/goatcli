@@ -186,7 +186,9 @@ function resolvePackedPath(normalized) {
   const fullPath = path.join(root, normalized);
   const resolved = path.resolve(fullPath);
   const rootResolved = path.resolve(root);
-  const boundary = `${rootResolved}${path.sep}`;
+  const boundary = rootResolved.endsWith(path.sep)
+    ? rootResolved
+    : `${rootResolved}${path.sep}`;
   if (!resolved.startsWith(boundary) || resolved === rootResolved) {
     return null;
   }

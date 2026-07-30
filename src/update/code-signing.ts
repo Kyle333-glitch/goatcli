@@ -244,8 +244,10 @@ function defaultRunner(
 
 function minimalToolEnvironment(platform: UpdatePlatform): NodeJS.ProcessEnv {
   if (platform === "win32") {
-    // Only expose the trusted Windows system directory to the signature
-    // tool. Publicly writable temp directories are intentionally omitted.
+    // Only expose the Windows system directory to the signature tool.
+    // Publicly writable temp directories are intentionally omitted. The
+    // PowerShell executable path itself is resolved from a fixed trusted
+    // default or caller-supplied value, not from this environment variable.
     return {
       SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
     };
@@ -260,7 +262,11 @@ function minimalToolEnvironment(platform: UpdatePlatform): NodeJS.ProcessEnv {
 }
 
 function powershellPath(systemRoot: string | undefined): string {
-  const root = systemRoot ?? process.env.SystemRoot ?? "C:\\Windows";
+  // Do not fall back to process.env.SystemRoot; that would let an inherited
+  // environment redirect signature verification to an attacker-controlled
+  // shell. Use the fixed trusted default unless a caller supplies an explicit,
+  // validated system root.
+  const root = systemRoot ?? "C:\\Windows";
   // Validate the pre-resolve value is absolute so relative input cannot be
   // turned into an absolute path by resolve. Reject UNC paths and any value
   // containing control characters.

@@ -50,7 +50,6 @@ export async function runEngineHealthCheck(
     "GOAT_UPDATE_HEALTH_CHECK_FAILED",
   );
   try {
-    if (process.platform !== "win32") await chmod(emptyWorkingDirectory, 0o700);
     const runner = options.runCommand ?? defaultRunner;
     const result = runner(options.executablePath, ["--version"], {
       cwd: emptyWorkingDirectory,

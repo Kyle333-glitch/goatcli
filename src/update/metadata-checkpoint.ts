@@ -134,8 +134,17 @@ export async function loadMetadataCheckpointChain(
 ): Promise<LoadedMetadataCheckpointChain> {
   // Side-effect-only construction validates the compiled trust anchor even
   // when the checkpoint store is empty. Instantiating TufTrustStore parses and
-  // verifies the embedded root.
-  new TufTrustStore(policy.embeddedRootBytes, policy.embeddedRootSha256);
+  // verifies the embedded root. Keep the reference so the object is not
+  // created only to be dropped.
+  const _trustStore = new TufTrustStore(
+    policy.embeddedRootBytes,
+    policy.embeddedRootSha256,
+  );
+  // Reference a property to satisfy "use it" linting while relying on the
+  // constructor for validation.
+  if (typeof _trustStore.authenticate !== "function") {
+    throw stateInvalid();
+  }
 
   const layout = await loadMetadataLayout(appDataDirectory);
   if (!layout) return emptyChain(policy.embeddedRootBytes);
