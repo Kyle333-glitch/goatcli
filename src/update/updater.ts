@@ -132,7 +132,7 @@ export async function runVerifiedUpdate(
   try {
     if (!recovered) {
       failed = true;
-      throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
+      throwRecoveryRequired();
     }
     return await runLockedUpdate(options, recovered, now);
   } catch (error) {
@@ -450,7 +450,7 @@ function requireMatchingActive(
       selection.target.custom.productVersion ||
     active.activation.record.artifactSha256 !== selection.target.sha256
   ) {
-    throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
+    throwStateInvalid();
   }
   return active;
 }
@@ -503,8 +503,20 @@ function assertStateCheckpoint(
       trusted.revokedReleaseSequences,
     )
   ) {
-    throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
+    throwStateInvalid();
   }
+}
+
+function throwStateInvalid(): never {
+  throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
+}
+
+function throwRecoveryRequired(): never {
+  throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
+}
+
+function throwUpdateDisabled(): never {
+  throw new UpdateError("GOAT_UPDATE_DISABLED");
 }
 
 function sameStrings(
@@ -564,13 +576,13 @@ function assertPolicyBinding(policy: VerifiedUpdatePolicy): void {
     policy.activation.compatibility.platform !== policy.platform ||
     policy.activation.compatibility.architecture !== policy.architecture
   ) {
-    throw new UpdateError("GOAT_UPDATE_DISABLED");
+    throwUpdateDisabled();
   }
 }
 
 function checkedNow(value: number): number {
   if (!Number.isSafeInteger(value) || value < 0) {
-    throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
+    throwStateInvalid();
   }
   return value;
 }

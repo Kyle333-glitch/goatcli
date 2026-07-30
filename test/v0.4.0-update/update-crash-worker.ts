@@ -6,6 +6,7 @@
  * production CLI.
  */
 import { writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type test from "node:test";
 import {
@@ -39,12 +40,9 @@ if (
 const appData = path.resolve(rawAppData);
 // Re-validate after canonicalization so any symlink/control-character
 // manipulation introduced by path.resolve is caught before use. Reject
-// traversal segments that would escape an otherwise absolute path.
-if (
-  !path.isAbsolute(appData) ||
-  /[\r\n\0]/.test(appData) ||
-  appData.split(path.sep).includes("..")
-) {
+// traversal segments that would escape an otherwise absolute path, and
+// require the path to remain inside a known test root.
+if (!isInsideTestRoot(appData)) {
   process.exit(64);
 }
 const context = {
@@ -118,6 +116,27 @@ async function repositoryServer(
   );
   await server.listen();
   return server;
+}
+
+function isInsideTestRoot(resolved: string): boolean {
+  if (
+    !path.isAbsolute(resolved) ||
+    /[\r\n\0]/.test(resolved) ||
+    resolved.split(path.sep).includes("..")
+  ) {
+    return false;
+  }
+  const tmpRoot = path.resolve(os.tmpdir());
+  const cwdRoot = path.resolve(process.cwd());
+  const relativeToTmp = path.relative(tmpRoot, resolved);
+  const relativeToCwd = path.relative(cwdRoot, resolved);
+  if (
+    relativeToTmp.startsWith("..") &&
+    relativeToCwd.startsWith("..")
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function updateOptions(bundle: TestUpdateBundle, server: MockManifestServer) {

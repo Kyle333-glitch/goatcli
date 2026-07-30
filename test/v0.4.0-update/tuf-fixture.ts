@@ -162,7 +162,7 @@ export function createTestTufFixture(
         name: channel,
         keyids: keys[channel]
           .map((key) => key.keyId)
-          .sort((left, right) => left.localeCompare(right)),
+          .sort(compareStrings),
         threshold: 2,
         terminating: true,
         paths: [`goat-engine/${channel}/*`],
@@ -170,11 +170,9 @@ export function createTestTufFixture(
     },
     custom: {
       goatRevocationSchema: 1,
-      revokedKeyIds: [...(options.revokedKeyIds ?? [])].sort((left, right) =>
-        left.localeCompare(right),
-      ),
+      revokedKeyIds: [...(options.revokedKeyIds ?? [])].sort(compareStrings),
       revokedArtifactSha256: [...(options.revokedArtifactSha256 ?? [])].sort(
-        (left, right) => left.localeCompare(right),
+        compareStrings,
       ),
       revokedReleaseSequences: [
         ...(options.revokedReleaseSequences ?? []),
@@ -251,7 +249,7 @@ export function signEnvelope(
       keyid: key.keyId,
       sig: sign(null, signedBytes, key.privateKey).toString("hex"),
     }))
-    .sort((left, right) => left.keyid.localeCompare(right.keyid));
+    .sort((left, right) => compareStrings(left.keyid, right.keyid));
   return Buffer.from(canonicalize({ signatures, signed }), "utf8");
 }
 
@@ -328,7 +326,7 @@ function keyMap(
 ): Record<string, TestTufKey["json"]> {
   return Object.fromEntries(
     [...keys]
-      .sort((left, right) => left.keyId.localeCompare(right.keyId))
+      .sort((left, right) => compareStrings(left.keyId, right.keyId))
       .map((key) => [key.keyId, key.json]),
   );
 }
@@ -337,7 +335,7 @@ function role(keys: readonly TestTufKey[], threshold: number) {
   return {
     keyids: keys
       .map((key) => key.keyId)
-      .sort((left, right) => left.localeCompare(right)),
+      .sort(compareStrings),
     threshold,
   };
 }
@@ -356,4 +354,8 @@ function artifactHash(channel: UpdateChannel): string {
 
 function sha256(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function compareStrings(left: string, right: string): number {
+  return left.localeCompare(right);
 }
