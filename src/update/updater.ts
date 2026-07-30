@@ -162,6 +162,14 @@ async function runLockedUpdate(
     options.appDataDirectory,
     options.policy,
   );
+  console.error(
+    "DEBUG runLockedUpdate appData=%s metadataGeneration=%s metadataHeadSha=%s stateCheckpointGen=%s stateCheckpointSha=%s",
+    options.appDataDirectory,
+    metadataCheckpoints.head.generation,
+    metadataCheckpoints.head.sha256,
+    state.record.metadataCheckpointGeneration,
+    state.record.metadataCheckpointSha256,
+  );
   assertStateCheckpoint(state, metadataCheckpoints);
   const channel = options.requestedChannel ?? state.record.configuredChannel;
   const transportOptions = {
@@ -487,23 +495,62 @@ function assertStateCheckpoint(
     "beta",
     "development",
   ] as const;
+  const mismatches: string[] = [];
+  if (record.metadataCheckpointGeneration !== checkpoints.head.generation) {
+    mismatches.push(
+      `metadataCheckpointGeneration(state=${record.metadataCheckpointGeneration}, checkpoints=${checkpoints.head.generation})`,
+    );
+  }
+  if (record.metadataCheckpointSha256 !== checkpoints.head.sha256) {
+    mismatches.push(
+      `metadataCheckpointSha256(state=${record.metadataCheckpointSha256}, checkpoints=${checkpoints.head.sha256})`,
+    );
+  }
+  if (record.trustedTimeUnixMs !== trusted.trustedTimeUnixMs) {
+    mismatches.push(
+      `trustedTimeUnixMs(state=${record.trustedTimeUnixMs}, checkpoints=${trusted.trustedTimeUnixMs})`,
+    );
+  }
+  for (const role of roles) {
+    if (record.metadataVersions[role] !== trusted.versions[role]) {
+      mismatches.push(
+        `metadataVersions.${role}(state=${record.metadataVersions[role]}, checkpoints=${trusted.versions[role]})`,
+      );
+    }
+    if (record.metadataDigests[role] !== trusted.digests[role]) {
+      mismatches.push(
+        `metadataDigests.${role}(state=${record.metadataDigests[role]}, checkpoints=${trusted.digests[role]})`,
+      );
+    }
+  }
+  if (!sameStrings(record.revokedKeyIds, trusted.revokedKeyIds)) {
+    mismatches.push(
+      `revokedKeyIds(state=${record.revokedKeyIds.join(",")}, checkpoints=${trusted.revokedKeyIds.join(",")})`,
+    );
+  }
   if (
-    record.metadataCheckpointGeneration !== checkpoints.head.generation ||
-    record.metadataCheckpointSha256 !== checkpoints.head.sha256 ||
-    record.trustedTimeUnixMs !== trusted.trustedTimeUnixMs ||
-    roles.some(
-      (role) =>
-        record.metadataVersions[role] !== trusted.versions[role] ||
-        record.metadataDigests[role] !== trusted.digests[role],
-    ) ||
-    !sameStrings(record.revokedKeyIds, trusted.revokedKeyIds) ||
-    !sameStrings(record.revokedArtifactSha256, trusted.revokedArtifactSha256) ||
+    !sameStrings(record.revokedArtifactSha256, trusted.revokedArtifactSha256)
+  ) {
+    mismatches.push(
+      `revokedArtifactSha256(state=${record.revokedArtifactSha256.join(",")}, checkpoints=${trusted.revokedArtifactSha256.join(",")})`,
+    );
+  }
+  if (
     !sameNumbers(
       record.revokedReleaseSequences,
       trusted.revokedReleaseSequences,
     )
   ) {
-    throwStateInvalid();
+    mismatches.push(
+      `revokedReleaseSequences(state=${record.revokedReleaseSequences.join(",")}, checkpoints=${trusted.revokedReleaseSequences.join(",")})`,
+    );
+  }
+  if (mismatches.length > 0) {
+    throw new UpdateError("GOAT_UPDATE_STATE_INVALID", {
+      cause: new Error(
+        `assertStateCheckpoint mismatch: ${mismatches.join("; ")}`,
+      ),
+    });
   }
 }
 

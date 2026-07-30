@@ -136,10 +136,8 @@ export async function loadMetadataCheckpointChain(
   // when the checkpoint store is empty. Instantiating TufTrustStore parses and
   // verifies the embedded root. Accessing a member makes the object
   // instantiation count as used while keeping the validation side effect.
-  void new TufTrustStore(
-    policy.embeddedRootBytes,
-    policy.embeddedRootSha256,
-  ).authenticate;
+  void new TufTrustStore(policy.embeddedRootBytes, policy.embeddedRootSha256)
+    .authenticate;
 
   const layout = await loadMetadataLayout(appDataDirectory);
   if (!layout) return emptyChain(policy.embeddedRootBytes);
