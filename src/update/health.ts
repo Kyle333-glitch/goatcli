@@ -54,7 +54,10 @@ export async function runEngineHealthCheck(
     const runner = options.runCommand ?? defaultRunner;
     const result = runner(options.executablePath, ["--version"], {
       cwd: emptyWorkingDirectory,
-      environment: minimalHealthEnvironment(options.platform),
+      environment: minimalHealthEnvironment(
+        options.platform,
+        emptyWorkingDirectory,
+      ),
       timeoutMs: HEALTH_TIMEOUT_MS,
       maxBufferBytes: MAX_HEALTH_OUTPUT_BYTES,
       shell: false,
@@ -109,12 +112,18 @@ function defaultRunner(
   };
 }
 
-function minimalHealthEnvironment(platform: UpdatePlatform): NodeJS.ProcessEnv {
+function minimalHealthEnvironment(
+  platform: UpdatePlatform,
+  workingDirectory: string,
+): NodeJS.ProcessEnv {
   if (platform === "win32") {
+    // Route any Windows temp usage into the launcher-owned working directory.
+    // Do not inherit the process's TEMP/TMP, which may point to a publicly
+    // writable directory.
     return {
       SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
-      TEMP: process.env.TEMP,
-      TMP: process.env.TMP,
+      TEMP: workingDirectory,
+      TMP: workingDirectory,
     };
   }
   return {
@@ -122,7 +131,7 @@ function minimalHealthEnvironment(platform: UpdatePlatform): NodeJS.ProcessEnv {
     LANG: "C",
     LC_ALL: "C",
     PATH: "/usr/bin:/bin",
-    TMPDIR: "/tmp",
+    TMPDIR: workingDirectory,
   };
 }
 

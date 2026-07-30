@@ -41,7 +41,12 @@ export async function assertPrivateDirectory(
       throw new UpdateError(errorCode);
     }
     const canonical = await realpath(directory);
-    if (path.resolve(canonical) !== path.resolve(directory)) {
+    // Compare by device/inode so Windows short-name/long-name aliases and
+    // case variations do not cause a false mismatch. A symlink/junction would
+    // either have been rejected by lstat above or would resolve to a different
+    // physical directory and therefore fail this identity check.
+    const canonicalStats = await lstat(canonical);
+    if (stats.dev !== canonicalStats.dev || stats.ino !== canonicalStats.ino) {
       throw new UpdateError(errorCode);
     }
   } catch (error) {
@@ -89,15 +94,28 @@ export async function writeImmutableFile(
       await link(temporary, destination);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (
-        code === "EEXIST" ||
-        code === "ENOTSUP" ||
-        code === "EPERM" ||
-        code === "EACCES"
-      ) {
+      if (code === "EEXIST") {
         throw new UpdateError(errorCode);
       }
-      throw new UpdateError(errorCode, { cause: error });
+      if (
+        process.platform === "win32" &&
+        (code === "ENOTSUP" || code === "EPERM")
+      ) {
+        // Windows may not support hard links for this filesystem, so fall
+        // back to a rename after confirming the destination does not already
+        // exist. This is weaker than link+unlink, but it is the best available
+        // no-clobber primitive on Windows.
+        const exists = await lstat(destination).catch((err) => {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+          throw new UpdateError(errorCode, { cause: err });
+        });
+        if (exists) throw new UpdateError(errorCode);
+        await rename(temporary, destination);
+      } else if (code === "EACCES" || code === "EPERM") {
+        throw new UpdateError(errorCode);
+      } else {
+        throw new UpdateError(errorCode, { cause: error });
+      }
     }
     renamed = true;
     try {
@@ -144,7 +162,13 @@ export async function readImmutableFile(
       throw new UpdateError(errorCode);
     }
     const canonical = await realpath(filePath);
-    if (path.resolve(canonical) !== path.resolve(filePath)) {
+    // Identity check by device/inode handles Windows short/long-name aliases and
+    // case variations. Symlinks are already rejected by lstat above.
+    const canonicalStats = await lstat(canonical);
+    if (
+      before.dev !== canonicalStats.dev ||
+      before.ino !== canonicalStats.ino
+    ) {
       throw new UpdateError(errorCode);
     }
     handle = await open(filePath, "r");

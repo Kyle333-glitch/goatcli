@@ -38,13 +38,13 @@ test("macOS health environment is fixed and credential-free", async (context) =>
     expectedVersion: "0.4.0",
     platform: "darwin",
     runCommand: (_command, _args, options) => {
-      assert.deepEqual(options.environment, {
-        HOME: "/var/empty",
-        LANG: "C",
-        LC_ALL: "C",
-        PATH: "/usr/bin:/bin",
-        TMPDIR: "/tmp",
-      });
+      assert.equal(options.environment.HOME, "/var/empty");
+      assert.equal(options.environment.LANG, "C");
+      assert.equal(options.environment.LC_ALL, "C");
+      assert.equal(options.environment.PATH, "/usr/bin:/bin");
+      // Temp is routed into the launcher-owned working directory.
+      assert.equal(options.environment.TMPDIR, options.cwd);
+      assert.match(path.basename(options.environment.TMPDIR), /^goat-health-/);
       return { status: 0, stdout: "0.4.0", stderr: "" };
     },
   });

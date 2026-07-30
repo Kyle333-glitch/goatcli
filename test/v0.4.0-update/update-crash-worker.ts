@@ -37,6 +37,11 @@ if (
   process.exit(64);
 }
 const appData = path.resolve(rawAppData);
+// Re-validate after canonicalization so any symlink/control-character
+// manipulation introduced by path.resolve is caught before use.
+if (!path.isAbsolute(appData) || /[\r\n\0]/.test(appData)) {
+  process.exit(64);
+}
 const context = {
   after() {},
 } as unknown as test.TestContext;

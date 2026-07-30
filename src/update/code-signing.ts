@@ -244,10 +244,10 @@ function defaultRunner(
 
 function minimalToolEnvironment(platform: UpdatePlatform): NodeJS.ProcessEnv {
   if (platform === "win32") {
+    // Only expose the trusted Windows system directory to the signature
+    // tool. Publicly writable temp directories are intentionally omitted.
     return {
       SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
-      TEMP: process.env.TEMP,
-      TMP: process.env.TMP,
     };
   }
   return {

@@ -94,8 +94,8 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          if command -v codesign >/dev/null 2>&1; then codesign --version; else echo "codesign not on PATH; macOS signing tests will be environment-gated."; fi
-          if command -v spctl >/dev/null 2>&1; then spctl --version; else echo "spctl not on PATH; Gatekeeper tests will be environment-gated."; fi
+          if command -v codesign >/dev/null 2>&1; then echo "codesign available"; else echo "codesign not on PATH; macOS signing tests will be environment-gated."; fi
+          if command -v spctl >/dev/null 2>&1; then echo "spctl available"; else echo "spctl not on PATH; Gatekeeper tests will be environment-gated."; fi
 
       - name: Check formatting
         run: npm run format:check
