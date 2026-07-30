@@ -3,7 +3,7 @@ export type EngineVersion = string;
 export type GoatPlatform = "win32" | "darwin";
 export type GoatArchitecture = "x64" | "arm64";
 export type ExecutablePath = string;
-export type ReleaseChannel = "stable" | "beta" | "dev";
+export type ReleaseChannel = "stable" | "beta" | "development" | "dev";
 
 export interface Checksum {
   algorithm: "sha256";
