@@ -1,4 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { Readable, Writable } from "node:stream";
@@ -177,6 +180,7 @@ export async function launchEngine(
   const cwd = options.cwd ?? processLike.cwd();
   let resolved: ResolvedEngine;
   let engineIntegrity: EngineIntegrityStatus;
+  let expectedExecutableChecksum: string | undefined;
   if (!options.resolvedEngine && options.installedUpdatePolicy) {
     try {
       const appDataDirectory =
@@ -198,17 +202,23 @@ export async function launchEngine(
             "goat-engine.json",
           ),
           source: "local-install",
-          releaseChannel: installed.active.activation.record.channel,
+          releaseChannel:
+            installed.active.activation.record.channel === "development"
+              ? "dev"
+              : installed.active.activation.record.channel,
           platform: installed.active.activation.record.platform,
           architecture: installed.active.activation.record.architecture,
           developmentOverride: false,
         };
         engineIntegrity = "verified";
+        expectedExecutableChecksum =
+          installed.active.candidate.manifest.checksum.value;
       } else {
-        ({ resolved, engineIntegrity } = resolveLegacyEngine(
-          options,
-          processLike,
-        ));
+        ({
+          resolved,
+          engineIntegrity,
+          checksum: expectedExecutableChecksum,
+        } = resolveLegacyEngine(options, processLike));
       }
     } catch (error) {
       if (error instanceof UpdateError) {
@@ -227,15 +237,26 @@ export async function launchEngine(
       { fs: options.fs },
     );
     resolved = validated.resolved;
+    if (!resolved.developmentOverride) {
+      expectedExecutableChecksum = validated.checksum;
+    }
     engineIntegrity = validated.manifest
       ? "verified"
       : "development_unverified";
   } else {
-    ({ resolved, engineIntegrity } = resolveLegacyEngine(options, processLike));
+    ({
+      resolved,
+      engineIntegrity,
+      checksum: expectedExecutableChecksum,
+    } = resolveLegacyEngine(options, processLike));
   }
   const engineEnvironment = createEngineEnvironment(
     options.env ?? processLike.env,
     resolved.platform,
+  );
+  await verifyExecutableAtLaunch(
+    resolved.executablePath,
+    resolved.developmentOverride ? undefined : expectedExecutableChecksum,
   );
 
   return launchValidatedEngine(resolved, options.args, {
@@ -271,6 +292,7 @@ function resolveLegacyEngine(
 ): {
   readonly resolved: ResolvedEngine;
   readonly engineIntegrity: EngineIntegrityStatus;
+  readonly checksum: string;
 } {
   const resolved = toResolvedEngine(
     getEnginePath({
@@ -288,6 +310,7 @@ function resolveLegacyEngine(
   return {
     resolved: validated.resolved,
     engineIntegrity: validated.manifest ? "verified" : "development_unverified",
+    checksum: validated.checksum,
   };
 }
 
@@ -522,6 +545,60 @@ export function getLauncherExitSignal(
   platform: NodeJS.Platform,
 ): NodeJS.Signals {
   return getParentExitSignal(platform);
+}
+
+async function verifyExecutableAtLaunch(
+  executablePath: string,
+  expectedSha256?: string,
+): Promise<void> {
+  const OPEN_READ_NOFOLLOW =
+    constants.O_RDONLY |
+    (typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0);
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(executablePath, OPEN_READ_NOFOLLOW);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // If the executable does not exist, the subsequent spawn will fail with a
+    // clearer error. We only perform the symlink/replacement check when the
+    // path resolves to an existing file.
+    if (code === "ENOENT") return;
+    throw new EngineContractError(
+      "GOAT_ENGINE_SPAWN_FAILED",
+      "The GOAT engine executable could not be opened for launch.",
+      "Run `goat doctor`.",
+    );
+  }
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile() || stats.isSymbolicLink()) {
+      throw new EngineContractError(
+        "GOAT_ENGINE_SPAWN_FAILED",
+        "The GOAT engine executable is not a regular file.",
+        "Run `goat update`.",
+      );
+    }
+    if (expectedSha256 !== undefined) {
+      const actual = await hashFileHandle(handle);
+      if (actual !== expectedSha256) {
+        throw new EngineContractError(
+          "GOAT_ENGINE_CHECKSUM_MISMATCH",
+          "The GOAT engine executable does not match its verified checksum.",
+          "Run `goat update`.",
+        );
+      }
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function hashFileHandle(handle: FileHandle): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of handle.createReadStream()) {
+    hash.update(chunk as Buffer);
+  }
+  return hash.digest("hex");
 }
 
 function childPipeTransport(child: ChildProcess) {

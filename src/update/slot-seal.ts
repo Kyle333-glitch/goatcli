@@ -14,6 +14,7 @@ import {
   type JsonValue,
 } from "./canonical-json.js";
 import { UpdateError } from "./errors.js";
+import { hashFileHandle } from "./hash.js";
 import type { AuthenticatedTarget, SignedContentEntry } from "./schema.js";
 import { assertNoLinkOrReparsePath } from "./temporary.js";
 
@@ -304,7 +305,11 @@ async function assertEntryBound(
     current.mtimeNs.toString(10) !== held.modifiedAtNs ||
     opened.ctimeNs.toString(10) !== held.changedAtNs ||
     current.ctimeNs.toString(10) !== held.changedAtNs ||
-    (await hashFileHandle(held.handle, held.length)) !== held.sha256
+    (await hashFileHandle(
+      held.handle,
+      held.length,
+      "GOAT_UPDATE_ACTIVATION_FAILED",
+    )) !== held.sha256
   ) {
     throw contentMismatch();
   }
@@ -385,27 +390,6 @@ async function readHeldFile(entry: HeldSlotEntry): Promise<Buffer> {
     offset += bytesRead;
   }
   return bytes;
-}
-
-async function hashFileHandle(
-  handle: FileHandle,
-  length: number,
-): Promise<string> {
-  const digest = createHash("sha256");
-  const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(length, 1)));
-  let position = 0;
-  while (position < length) {
-    const { bytesRead } = await handle.read(
-      buffer,
-      0,
-      Math.min(buffer.byteLength, length - position),
-      position,
-    );
-    if (bytesRead <= 0) throw contentMismatch();
-    digest.update(buffer.subarray(0, bytesRead));
-    position += bytesRead;
-  }
-  return digest.digest("hex");
 }
 
 async function closeHandles(

@@ -9,7 +9,10 @@ import {
   type ValidatedInstalledActivation,
 } from "./activation.js";
 import { UpdateError } from "./errors.js";
-import { loadMetadataCheckpointChain } from "./metadata-checkpoint.js";
+import {
+  loadMetadataCheckpointChain,
+  type LoadedMetadataCheckpointChain,
+} from "./metadata-checkpoint.js";
 import {
   activationPolicyForState,
   effectiveStateForMetadataCheckpoint,
@@ -25,23 +28,51 @@ export interface InstalledEngineInspection {
   readonly targetSigningKeyIds: readonly string[];
 }
 
+const INSPECTION_RETRY_ATTEMPTS = 4;
+const INSPECTION_RETRY_DELAY_MS = 50;
+
 export async function inspectInstalledEngine(
   appDataDirectory: string,
   policy: ActivationSecurityPolicy,
 ): Promise<InstalledEngineInspection | null> {
-  const state = await loadUpdaterState(appDataDirectory);
-  const chain = await loadActivationChain(
-    appDataDirectory,
-    policy.receipt.platform,
-    policy.receipt.architecture,
-  );
-  const checkpoints = await loadMetadataCheckpointChain(
-    appDataDirectory,
-    policy.receipt,
-  );
-  if (!state && chain.records.length === 0) return null;
+  let state: LoadedUpdaterState | null = null;
+  let chain: ActivationChain | null = null;
+  let checkpoints: LoadedMetadataCheckpointChain | null = null;
+  let previousKey: string | null = null;
+  for (let attempt = 0; attempt < INSPECTION_RETRY_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) {
+      await delay(INSPECTION_RETRY_DELAY_MS);
+    }
+    const loadedState = await loadUpdaterState(appDataDirectory);
+    const loadedChain = await loadActivationChain(
+      appDataDirectory,
+      policy.receipt.platform,
+      policy.receipt.architecture,
+    );
+    const loadedCheckpoints = await loadMetadataCheckpointChain(
+      appDataDirectory,
+      policy.receipt,
+    );
+    const key =
+      loadedState && loadedChain.current
+        ? `${loadedState.record.currentActivationGeneration}:${loadedState.record.configuredChannel}`
+        : null;
+    if (key !== null && key === previousKey) {
+      state = loadedState;
+      chain = loadedChain;
+      checkpoints = loadedCheckpoints;
+      break;
+    }
+    previousKey = key;
+    state = loadedState;
+    chain = loadedChain;
+    checkpoints = loadedCheckpoints;
+  }
+  if (!state && chain && chain.records.length === 0) return null;
   if (
     !state ||
+    !chain ||
+    !checkpoints ||
     !chain.current ||
     state.record.currentActivationGeneration !==
       chain.current.record.generation ||
@@ -92,6 +123,10 @@ export async function inspectInstalledEngine(
     rootSigningKeyIds: signatureKeyIds(active.receipt.metadata.root.json),
     targetSigningKeyIds: signatureKeyIds(active.receipt.metadata.channel.json),
   };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function signatureKeyIds(envelope: JsonObject): readonly string[] {

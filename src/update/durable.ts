@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   open,
@@ -9,6 +10,7 @@ import {
   realpath,
   rename,
   rm,
+  unlink,
   type FileHandle,
 } from "node:fs/promises";
 import { UpdateError, type UpdateErrorCode } from "./errors.js";
@@ -84,18 +86,27 @@ export async function writeImmutableFile(
     handle = undefined;
     if (process.platform !== "win32") await chmod(temporary, 0o600);
     try {
-      await lstat(destination);
-      throw new UpdateError(errorCode);
+      await link(temporary, destination);
     } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
       if (
-        error instanceof UpdateError ||
-        (error as NodeJS.ErrnoException).code !== "ENOENT"
+        code === "EEXIST" ||
+        code === "ENOTSUP" ||
+        code === "EPERM" ||
+        code === "EACCES"
       ) {
-        throw error;
+        throw new UpdateError(errorCode);
+      }
+      throw new UpdateError(errorCode, { cause: error });
+    }
+    renamed = true;
+    try {
+      await unlink(temporary);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new UpdateError(errorCode, { cause: error });
       }
     }
-    await rename(temporary, destination);
-    renamed = true;
     await syncDirectory(root, errorCode);
     const stored = await readImmutableFile(
       destination,

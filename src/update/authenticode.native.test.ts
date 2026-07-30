@@ -37,7 +37,7 @@ test("Windows Authenticode verification with a test-only self-signed certificate
     [
       "-NoProfile",
       "-Command",
-      `New-SelfSignedCertificate -Type Custom -Subject "CN=GOAT Test" -KeyUsage DigitalSignature -FriendlyName "GOAT Test" -CertStoreLocation Cert:\\CurrentUser\\My | Select-Object -ExpandProperty Thumbprint`,
+      `$cert = New-SelfSignedCertificate -Type Custom -Subject "CN=GOAT Test" -KeyUsage DigitalSignature -FriendlyName "GOAT Test" -CertStoreLocation Cert:\\CurrentUser\\My; Write-Output $cert.Thumbprint; Write-Output $cert.GetCertHashString('SHA256')`,
     ],
     { encoding: "utf8", shell: false, windowsHide: true, timeout: 30000 },
   );
@@ -45,7 +45,9 @@ test("Windows Authenticode verification with a test-only self-signed certificate
     context.skip("could not create test self-signed certificate");
     return;
   }
-  const thumbprint = certResult.stdout.trim();
+  const certLines = certResult.stdout.trim().split(/\r?\n/).filter(Boolean);
+  const thumbprint = certLines[0]!;
+  const certificateSha256 = certLines[1]!.toLowerCase();
 
   const signResult = spawnSync(
     signtool,
@@ -72,7 +74,7 @@ test("Windows Authenticode verification with a test-only self-signed certificate
     platform: "win32",
     executablePath,
     targetPolicy: { scheme: "authenticode-sha256", identityId: "goat-test" },
-    approvedIdentities: approvedIdentities(thumbprint),
+    approvedIdentities: approvedIdentities(certificateSha256),
   });
 
   await assert.rejects(
@@ -80,7 +82,7 @@ test("Windows Authenticode verification with a test-only self-signed certificate
       platform: "win32",
       executablePath,
       targetPolicy: { scheme: "authenticode-sha256", identityId: "goat-test" },
-      approvedIdentities: approvedIdentities("b".repeat(40)),
+      approvedIdentities: approvedIdentities("b".repeat(64)),
     }),
     (error: unknown) => error instanceof Error,
   );
@@ -92,7 +94,7 @@ test("Windows Authenticode verification with a test-only self-signed certificate
       platform: "win32",
       executablePath: alteredPath,
       targetPolicy: { scheme: "authenticode-sha256", identityId: "goat-test" },
-      approvedIdentities: approvedIdentities(thumbprint),
+      approvedIdentities: approvedIdentities(certificateSha256),
     }),
     (error: unknown) => error instanceof Error,
   );

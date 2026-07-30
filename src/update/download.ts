@@ -2,6 +2,7 @@ import { createHash, randomInt } from "node:crypto";
 import path from "node:path";
 import { rm, type FileHandle } from "node:fs/promises";
 import { UpdateError } from "./errors.js";
+import { hashFileHandle } from "./hash.js";
 import {
   ARTIFACT_NETWORK_LIMITS,
   isRetryableNetworkError,
@@ -86,7 +87,11 @@ export async function downloadVerifiedArtifact(
       ) {
         throw new UpdateError("GOAT_UPDATE_TEMPORARY_FILE_UNSAFE");
       }
-      const rereadDigest = await hashHeldFile(temporary.handle, target.length);
+      const rereadDigest = await hashFileHandle(
+        temporary.handle,
+        target.length,
+        "GOAT_UPDATE_ARTIFACT_HASH_MISMATCH",
+      );
       if (rereadDigest !== target.sha256) {
         throw new UpdateError("GOAT_UPDATE_ARTIFACT_HASH_MISMATCH");
       }
@@ -134,7 +139,11 @@ export async function assertHeldArtifactUnchanged(
     stats.size !== artifact.length ||
     stats.dev !== artifact.device ||
     stats.ino !== artifact.inode ||
-    (await hashHeldFile(artifact.handle, artifact.length)) !== artifact.sha256
+    (await hashFileHandle(
+      artifact.handle,
+      artifact.length,
+      "GOAT_UPDATE_ARTIFACT_HASH_MISMATCH",
+    )) !== artifact.sha256
   ) {
     throw new UpdateError("GOAT_UPDATE_ARTIFACT_HASH_MISMATCH");
   }
@@ -174,29 +183,6 @@ async function writeAll(
     }
     offset += result.bytesWritten;
   }
-}
-
-async function hashHeldFile(
-  handle: FileHandle,
-  length: number,
-): Promise<string> {
-  const digest = createHash("sha256");
-  const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(length, 1)));
-  let position = 0;
-  while (position < length) {
-    const { bytesRead } = await handle.read(
-      buffer,
-      0,
-      Math.min(buffer.byteLength, length - position),
-      position,
-    );
-    if (bytesRead <= 0) {
-      throw new UpdateError("GOAT_UPDATE_ARTIFACT_SIZE_MISMATCH");
-    }
-    digest.update(buffer.subarray(0, bytesRead));
-    position += bytesRead;
-  }
-  return digest.digest("hex");
 }
 
 async function randomizedBackoff(): Promise<void> {

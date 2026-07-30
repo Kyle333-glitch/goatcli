@@ -292,6 +292,7 @@ function validateDelegations(value: JsonValue): void {
     throw invalidMetadata();
   }
   const seen = new Set<string>();
+  const usedKeyIds = new Set<string>();
   for (const rawRole of delegations.roles) {
     const role = expectObject(rawRole);
     if (
@@ -313,10 +314,15 @@ function validateDelegations(value: JsonValue): void {
       throw invalidMetadata();
     }
     const roleKeys = validateRoleFields(role, 2, 3);
-    if (roleKeys.some((keyId) => !keys.has(keyId))) throw invalidMetadata();
+    for (const keyId of roleKeys) {
+      if (!keys.has(keyId)) throw invalidMetadata();
+      if (usedKeyIds.has(keyId)) throw invalidMetadata();
+      usedKeyIds.add(keyId);
+    }
     seen.add(role.name);
   }
   if (CHANNEL_ROLES.some((role) => !seen.has(role))) throw invalidMetadata();
+  if (usedKeyIds.size !== keys.size) throw invalidMetadata();
 }
 
 function validateRoleFields(
@@ -439,7 +445,14 @@ function isCanonicalExpiry(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) {
     return false;
   }
-  return Number.isFinite(Date.parse(value));
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return false;
+  // Reject nonexistent calendar dates that Date.parse normalizes forward
+  // (e.g. 2023-02-30). The parsed instant must round-trip to the input,
+  // allowing the optional .sss milliseconds form.
+  const iso = new Date(parsed).toISOString();
+  const normalized = value.includes(".") ? value : value.replace("Z", ".000Z");
+  return iso === normalized;
 }
 
 function isSha256(value: string): boolean {

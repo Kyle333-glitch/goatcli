@@ -39,6 +39,18 @@ const COMPILERS: Compiler[] = [
 
 function findCompiler(): Compiler | undefined {
   for (const compiler of COMPILERS) {
+    // MSVC's cl.exe treats --version as a source filename and exits with 2.
+    // Detect it by invoking it without arguments, which also prints usage.
+    if (compiler.command === "cl") {
+      const result = spawnSync(compiler.command, [], {
+        shell: false,
+        windowsHide: true,
+        timeout: 5000,
+        killSignal: "SIGKILL",
+      });
+      if (!result.error && !result.signal) return compiler;
+      continue;
+    }
     const result = spawnSync(compiler.command, ["--version"], {
       shell: false,
       windowsHide: true,

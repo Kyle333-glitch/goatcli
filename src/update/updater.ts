@@ -131,7 +131,8 @@ export async function runVerifiedUpdate(
   let failed = false;
   try {
     if (!recovered) {
-      throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
+      failed = true;
+      return Promise.reject(new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED"));
     }
     return await runLockedUpdate(options, recovered, now);
   } catch (error) {
@@ -235,6 +236,14 @@ async function runLockedUpdate(
     const releaseSequence = authenticated.channel.metadata.signed.version;
     await transition("authenticate-manifest", { releaseSequence });
 
+    const activeRelease = recovered.active
+      ? {
+          releaseSequence: recovered.active.activation.record.releaseSequence,
+          channel: recovered.active.activation.record.channel,
+          productVersion: recovered.active.activation.record.productVersion,
+          artifactSha256: recovered.active.activation.record.artifactSha256,
+        }
+      : undefined;
     const selection = selectAuthenticatedArtifact(
       authenticated.channel,
       {
@@ -246,6 +255,7 @@ async function runLockedUpdate(
           state.record.maxAuthenticatedReleaseSequence,
         maxActivatedReleaseSequence: state.record.maxActivatedReleaseSequence,
         knownReleases: state.record.knownReleases,
+        activeRelease,
       },
       authenticated.revocations,
     );

@@ -217,6 +217,8 @@ function authenticateReceiptRecord(
     throw new UpdateError("GOAT_UPDATE_SIGNATURE_INVALID");
   }
   const raw = decodeReceiptMetadata(record);
+  const current = policy.currentRevocations ?? emptyRevocations();
+  validateSequentialRoots(raw.sequentialRoots, current.revokedKeyIds);
   const store = new TufTrustStore(
     policy.embeddedRootBytes,
     policy.embeddedRootSha256,
@@ -231,7 +233,6 @@ function authenticateReceiptRecord(
     state: emptyTrustedMetadataState(new Date(0)),
     now: new Date(record.authenticatedAtUnixMs),
   });
-  const current = policy.currentRevocations ?? emptyRevocations();
   assertNoCurrentlyRevokedSigner(metadata, current.revokedKeyIds);
   const revocations = mergeRevocations(metadata.revocations, current);
   const selected = selectAuthenticatedArtifact(
@@ -298,6 +299,24 @@ export async function reconstructStateFromReceipts(
         right.targets.metadata.signed.version,
     )
     .at(-1)!.revocations;
+
+  const cumulativeSequentialRoots = new Map<string, SequentialRootInfo>();
+  for (const receipt of receipts) {
+    const roots = validateSequentialRoots(
+      receipt.record.sequentialRoots.map(decodeMetadata),
+      currentRevocations.revokedKeyIds,
+    );
+    for (const [identity, info] of roots) {
+      const existing = cumulativeSequentialRoots.get(identity);
+      if (existing && existing.digest !== info.digest) {
+        throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
+      }
+      if (!existing) {
+        cumulativeSequentialRoots.set(identity, info);
+      }
+    }
+  }
+
   const versions = emptyTrustedMetadataState().versions as Record<
     keyof TrustedMetadataVersions,
     number
@@ -510,6 +529,60 @@ function assertNoCurrentlyRevokedSigner(
       }
     }
   }
+}
+
+interface SequentialRootInfo {
+  readonly version: number;
+  readonly digest: string;
+}
+
+function validateSequentialRoots(
+  sequentialRoots: readonly Uint8Array[],
+  revokedKeyIds: readonly string[],
+): Map<string, SequentialRootInfo> {
+  const seen = new Map<string, SequentialRootInfo>();
+  const revoked = new Set(revokedKeyIds);
+
+  for (const raw of sequentialRoots) {
+    const value = parseCanonicalJson(raw, {
+      maxBytes: MAX_METADATA_BYTES,
+      errorCode: "GOAT_UPDATE_STATE_INVALID",
+    });
+    if (!isJsonObject(value) || !isJsonObject(value.signed)) {
+      throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
+    }
+    const version = value.signed.version;
+    if (
+      typeof version !== "number" ||
+      !Number.isSafeInteger(version) ||
+      version <= 0
+    ) {
+      throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
+    }
+    if (!Array.isArray(value.signatures)) {
+      throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
+    }
+    for (const signature of value.signatures) {
+      if (
+        isJsonObject(signature) &&
+        typeof signature.keyid === "string" &&
+        revoked.has(signature.keyid)
+      ) {
+        throw new UpdateError("GOAT_UPDATE_SIGNING_KEY_REVOKED");
+      }
+    }
+    const identity = `root:${version}`;
+    const digest = sha256(raw);
+    const existing = seen.get(identity);
+    if (existing && existing.digest !== digest) {
+      throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
+    }
+    if (!existing) {
+      seen.set(identity, { version, digest });
+    }
+  }
+
+  return seen;
 }
 
 function metadataRoles(

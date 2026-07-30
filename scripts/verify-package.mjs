@@ -122,10 +122,29 @@ function scanPackedFiles(fileEntries, failures) {
     ".zip",
     ".bin",
   ]);
-  const textExtensions = new Set([".js", ".ts", ".json", ".md"]);
+  const textExtensions = new Set([
+    ".js",
+    ".ts",
+    ".json",
+    ".md",
+    ".yml",
+    ".yaml",
+    ".txt",
+    ".html",
+    ".css",
+    ".svg",
+    ".xml",
+    ".csv",
+  ]);
   for (const { path: filePath } of fileEntries) {
     const normalized = filePath.replaceAll("\\", "/");
-    if (!normalized.startsWith("dist/")) continue;
+    const resolved = resolvePackedPath(normalized);
+    if (!resolved) {
+      failures.push(
+        `packed path ${normalized} resolves outside the package root or is not a regular file`,
+      );
+      continue;
+    }
     const lower = normalized.toLowerCase();
     const basename = lower.split("/").pop() ?? "";
     const ext = basename.includes(".")
@@ -138,7 +157,7 @@ function scanPackedFiles(fileEntries, failures) {
     }
     if (textExtensions.has(ext)) {
       try {
-        const raw = fs.readFileSync(path.join(root, normalized));
+        const raw = fs.readFileSync(resolved);
         if (containsBinaryPayload(raw)) {
           failures.push(
             `packed file ${normalized} appears to contain non-text (native/binary) bytes`,
@@ -163,14 +182,33 @@ function scanPackedFiles(fileEntries, failures) {
   }
 }
 
+function resolvePackedPath(normalized) {
+  const fullPath = path.join(root, normalized);
+  const resolved = path.resolve(fullPath);
+  const rootResolved = path.resolve(root);
+  const boundary = `${rootResolved}${path.sep}`;
+  if (!resolved.startsWith(boundary) || resolved === rootResolved) {
+    return null;
+  }
+  let stats;
+  try {
+    stats = fs.lstatSync(resolved);
+  } catch {
+    return null;
+  }
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    return null;
+  }
+  return resolved;
+}
+
 function containsBinaryPayload(raw) {
-  const sample = raw.subarray(0, 8192);
   // Null bytes are a strong indicator of a native/binary file.
-  if (sample.includes(0)) return true;
+  if (raw.includes(0)) return true;
   // Valid UTF-8 text (including multi-byte characters) should not be flagged
   // as binary. Reject any content that cannot be decoded as valid UTF-8.
   try {
-    new TextDecoder("utf8", { fatal: true }).decode(sample);
+    new TextDecoder("utf8", { fatal: true }).decode(raw);
     return false;
   } catch {
     return true;

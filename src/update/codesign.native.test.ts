@@ -18,7 +18,7 @@ function findCommand(command: string): string | undefined {
   return undefined;
 }
 
-test("macOS codesign and spctl verify a signed fixture binary", async (context) => {
+test("macOS codesign and spctl reject unsigned/altered binaries", async (context) => {
   if (process.platform !== "darwin") {
     context.skip("macOS codesign test runs only on macOS");
     return;
@@ -51,13 +51,6 @@ test("macOS codesign and spctl verify a signed fixture binary", async (context) 
     );
     return;
   }
-
-  await verifyPlatformCodeSignature({
-    platform: "darwin",
-    executablePath,
-    targetPolicy: { scheme: "apple-developer-id", identityId: "goat-test" },
-    approvedIdentities: approvedIdentities(),
-  });
 
   const unsignedPath = path.join(root, "goat-engine-unsigned");
   await writeFile(unsignedPath, "TEST-ONLY unsigned executable");

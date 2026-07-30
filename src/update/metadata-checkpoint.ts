@@ -133,7 +133,12 @@ export async function loadMetadataCheckpointChain(
   policy: MetadataCheckpointPolicy,
 ): Promise<LoadedMetadataCheckpointChain> {
   // Validate the compiled trust anchor even when the checkpoint store is empty.
-  new TufTrustStore(policy.embeddedRootBytes, policy.embeddedRootSha256);
+  // Instantiating TufTrustStore parses and verifies the embedded root.
+  const _trustStore = new TufTrustStore(
+    policy.embeddedRootBytes,
+    policy.embeddedRootSha256,
+  );
+  void _trustStore;
 
   const layout = await loadMetadataLayout(appDataDirectory);
   if (!layout) return emptyChain(policy.embeddedRootBytes);

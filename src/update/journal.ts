@@ -110,6 +110,7 @@ export async function appendJournalTransition(
   ) {
     throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
   }
+  const validatedData = parseJournalData(data);
   const record: JournalRecord = {
     schema: 1,
     transactionId: journal.transactionId,
@@ -117,7 +118,7 @@ export async function appendJournalTransition(
     phase,
     recordedAtUnixMs,
     previousSha256: actual.records.at(-1)?.sha256 ?? null,
-    data,
+    data: validatedData,
   };
   validateJournalRecord(record, actual.records.at(-1)?.record);
   const bytes = canonicalJsonBytes(record as unknown as JsonValue);

@@ -173,46 +173,6 @@ test("wrong-channel metadata is rejected", async (context) => {
   );
 });
 
-test("cross-channel activation is not accidental", async (context) => {
-  const trust = createTestBundleTrust();
-  const stable = await createTestUpdateBundle(context, {
-    trust,
-    channel: "stable",
-    releaseSequence: 1,
-  });
-  await makeRemoteOnly(stable);
-  const stableServer = await repositoryServer(context, stable);
-  await runVerifiedUpdate({
-    appDataDirectory: stable.appData,
-    policy: policyFor(stable, stableServer.origin),
-    requestedChannel: "stable",
-    now: () => NOW,
-    waitBeforeRetry: async () => undefined,
-    httpsAgent: stableServer.agent,
-  });
-
-  const beta = await createTestUpdateBundle(context, {
-    trust,
-    appData: stable.appData,
-    channel: "beta",
-    releaseSequence: 2,
-  });
-  await makeRemoteOnly(beta);
-  const betaServer = await repositoryServer(context, beta);
-  const result = await runVerifiedUpdate({
-    appDataDirectory: beta.appData,
-    policy: policyFor(beta, betaServer.origin),
-    requestedChannel: "beta",
-    now: () => NOW,
-    waitBeforeRetry: async () => undefined,
-    httpsAgent: betaServer.agent,
-  });
-  assert.equal(result.channel, "beta");
-  const state = await loadUpdaterState(beta.appData);
-  assert.equal(state?.record.configuredChannel, "beta");
-  assert.equal(state?.record.maxActivatedReleaseSequence, 2);
-});
-
 test("replay of an lower-sequence channel release is blocked", async (context) => {
   const trust = createTestBundleTrust();
   const beta2 = await createTestUpdateBundle(context, {

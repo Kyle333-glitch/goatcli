@@ -19,6 +19,7 @@ import type {
   SignedContentEntry,
   UpdatePlatform,
 } from "./schema.js";
+import { hashFileHandle } from "./hash.js";
 import {
   assertEmptyStagingDirectory,
   assertNoLinkOrReparsePath,
@@ -577,29 +578,6 @@ async function writeAll(
     }
     offset += bytesWritten;
   }
-}
-
-async function hashFileHandle(
-  handle: FileHandle,
-  length: number,
-): Promise<string> {
-  const digest = createHash("sha256");
-  const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(length, 1)));
-  let position = 0;
-  while (position < length) {
-    const { bytesRead } = await handle.read(
-      buffer,
-      0,
-      Math.min(buffer.byteLength, length - position),
-      position,
-    );
-    if (bytesRead <= 0) {
-      throw new UpdateError("GOAT_UPDATE_ARCHIVE_CONTENT_MISMATCH");
-    }
-    digest.update(buffer.subarray(0, bytesRead));
-    position += bytesRead;
-  }
-  return digest.digest("hex");
 }
 
 function asciiCompare(left: string, right: string): number {

@@ -26,6 +26,7 @@ export interface ArtifactSelectionPolicy {
   readonly maxAuthenticatedReleaseSequence: number;
   readonly maxActivatedReleaseSequence: number;
   readonly knownReleases?: readonly KnownReleaseIdentity[];
+  readonly activeRelease?: KnownReleaseIdentity;
 }
 
 export interface ArtifactSelection {
@@ -150,6 +151,12 @@ export function selectArtifactFromTargets(
   const existingSequence = (policy.knownReleases ?? []).find(
     (release) => release.releaseSequence === selected.custom.releaseSequence,
   );
+  const activeMatchesSelected =
+    policy.activeRelease !== undefined &&
+    policy.activeRelease.releaseSequence === selected.custom.releaseSequence &&
+    policy.activeRelease.channel === selected.custom.channel &&
+    policy.activeRelease.productVersion === selected.custom.productVersion &&
+    policy.activeRelease.artifactSha256 === selected.sha256;
   if (selected.custom.releaseSequence === sequenceFloor) {
     if (
       !existingSequence ||
@@ -159,11 +166,13 @@ export function selectArtifactFromTargets(
     ) {
       throw new UpdateError("GOAT_UPDATE_METADATA_REPLAYED");
     }
+    const alreadyCurrent =
+      policy.activeRelease !== undefined
+        ? activeMatchesSelected
+        : selected.custom.releaseSequence ===
+          policy.maxActivatedReleaseSequence;
     return {
-      status:
-        selected.custom.releaseSequence === policy.maxActivatedReleaseSequence
-          ? "already-current"
-          : "update-available",
+      status: alreadyCurrent ? "already-current" : "update-available",
       target: selected,
     };
   }

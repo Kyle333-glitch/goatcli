@@ -94,11 +94,20 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
     return;
   }
 
-  const updatePolicy = resolveUpdatePolicy(options, launcherVersion);
+  let updatePolicy: VerifiedUpdatePolicy | null;
+  try {
+    updatePolicy = resolveUpdatePolicy(options, launcherVersion);
+  } catch (error) {
+    stderr.write(
+      "GOAT launcher error: This build has invalid update trust material.\n",
+    );
+    exit(1);
+    return;
+  }
   const appDataDirectory =
     options.appDataDir ??
     getAppDataDir({
-      env,
+      env: env ?? options.processLike?.env ?? process.env,
       platform:
         options.platform ?? options.processLike?.platform ?? process.platform,
       homeDir: options.homeDir,

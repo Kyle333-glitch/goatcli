@@ -106,32 +106,31 @@ jobs:
         timeout-minutes: 5
 
       - name: Run full test suite
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test -- --test-reporter=tap | tee test-output.log
         timeout-minutes: 20
+
+      - name: Check for unexpectedly skipped native tests
+        shell: pwsh
+        run: |
+          $skipCount = (Get-Content test-output.log | Select-String -Pattern "# SKIP" -AllMatches).Count
+          if ($skipCount -gt 0) {
+            Write-Error "Tests skipped: $skipCount"
+          }
 
       - name: Run privacy tests
         run: npm run test:privacy
         timeout-minutes: 10
 
-      - name: Run privacy architecture check
-        run: npm run privacy:check
-        timeout-minutes: 5
-
-      - name: Run lint
+      - name: Run lint and privacy architecture check
         run: npm run lint
         timeout-minutes: 5
 
       - name: Verify package contents
         run: npm run verify:package
         timeout-minutes: 10
-
-      - name: Check for unexpectedly skipped native tests
-        shell: pwsh
-        run: |
-          $skipCount = (npm test -- --test-reporter=dot 2>&1 | Select-String -Pattern "skip" -AllMatches).Count
-          if ($skipCount -gt 0) {
-            Write-Host "Tests skipped: $skipCount"
-          }
 
       - name: Cross-repository test (if configured)
         run: npm run test:cross-repo

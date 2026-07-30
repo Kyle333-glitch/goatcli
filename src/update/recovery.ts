@@ -748,14 +748,13 @@ async function removeUncommittedProvisionalSlot(
   }
   const pendingSlotName = `.pending-${transactionId}-${slotName}`;
   for (const channel of ["stable", "beta", "development"] as const) {
-    const releaseDirectory = path.join(
-      path.resolve(appDataDirectory),
-      "engines",
+    const releaseDirectory = await canonicalReleaseDirectory(
+      appDataDirectory,
       channel,
-      `${platform}-${architecture}`,
-      "releases",
+      platform,
+      architecture,
     );
-    if (!(await isPrivateDirectoryIfPresent(releaseDirectory))) continue;
+    if (!releaseDirectory) continue;
     for (const name of [pendingSlotName, slotName]) {
       const candidate = path.join(releaseDirectory, name);
       if (path.dirname(candidate) !== releaseDirectory) {
@@ -999,6 +998,48 @@ async function verifyRecoveryCleanup(
   ) {
     throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
   }
+}
+
+async function canonicalReleaseDirectory(
+  appDataDirectory: string,
+  channel: string,
+  platform: "win32" | "darwin",
+  architecture: "x64" | "arm64",
+): Promise<string | null> {
+  const expected = path.join(
+    path.resolve(appDataDirectory),
+    "engines",
+    channel,
+    `${platform}-${architecture}`,
+    "releases",
+  );
+  if (!(await isPrivateDirectoryIfPresent(expected))) return null;
+
+  let canonical: string;
+  try {
+    canonical = await realpath(expected);
+  } catch (error) {
+    throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED", { cause: error });
+  }
+  const expectedRoot = path.join(path.resolve(appDataDirectory), "engines");
+  const canonicalRoot = await realpath(expectedRoot);
+  if (
+    canonical !== canonicalRoot &&
+    !canonical.startsWith(`${canonicalRoot}${path.sep}`)
+  ) {
+    throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
+  }
+  const actualSegments = path
+    .relative(canonicalRoot, canonical)
+    .split(path.sep);
+  const expectedSegments = [channel, `${platform}-${architecture}`, "releases"];
+  if (
+    actualSegments.length !== expectedSegments.length ||
+    actualSegments.some((segment, index) => segment !== expectedSegments[index])
+  ) {
+    throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
+  }
+  return canonical;
 }
 
 async function isPrivateDirectoryIfPresent(

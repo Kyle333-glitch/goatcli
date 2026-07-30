@@ -155,6 +155,7 @@ export async function activateCandidate(
     treeSha256: finalized.treeSha256,
   };
   let held: HeldVerifiedSlot | undefined;
+  let activationResult: ActivatedInstallation | undefined;
   let primaryFailure: unknown;
   try {
     held = await openHeldVerifiedSlot(destination, finalized.target);
@@ -171,16 +172,17 @@ export async function activateCandidate(
     }
 
     await assertHeldVerifiedSlotBound(held, destination);
+    const activatedExecutablePath = boundExecutablePath(held);
     await verifyPlatformCodeSignature({
       platform: finalized.target.custom.platform,
-      executablePath: compatible.executablePath,
+      executablePath: activatedExecutablePath,
       targetPolicy: finalized.target.custom.codeSigning,
       approvedIdentities: input.policy.approvedCodeSigningIdentities,
       runCommand: input.policy.runSigningCommand,
     });
     await assertHeldVerifiedSlotBound(held, destination);
     await runEngineHealthCheck({
-      executablePath: compatible.executablePath,
+      executablePath: activatedExecutablePath,
       expectedVersion: compatible.manifest.goatEngineVersion,
       platform: finalized.target.custom.platform,
       runCommand: input.policy.runHealthCommand,
@@ -216,7 +218,7 @@ export async function activateCandidate(
     await assertHeldVerifiedSlotBound(held, destination);
     await input.observer?.activationCommitted?.(activation);
     await assertHeldVerifiedSlotBound(held, destination);
-    return {
+    activationResult = {
       activation,
       receipt,
       candidate: committedCandidate,
@@ -225,20 +227,24 @@ export async function activateCandidate(
     };
   } catch (error) {
     primaryFailure = error;
-    throw error;
-  } finally {
-    if (held) {
-      try {
-        await disposeHeldVerifiedSlot(held);
-      } catch (error) {
-        if (primaryFailure === undefined) {
-          throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED", {
-            cause: error,
-          });
-        }
-      }
+  }
+
+  let disposalFailure: unknown;
+  if (held) {
+    try {
+      await disposeHeldVerifiedSlot(held);
+    } catch (error) {
+      disposalFailure = error;
     }
   }
+
+  if (primaryFailure !== undefined) throw primaryFailure;
+  if (disposalFailure !== undefined) {
+    throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED", {
+      cause: disposalFailure,
+    });
+  }
+  return activationResult!;
 }
 
 export async function validateInstalledActivation(
@@ -278,6 +284,7 @@ export async function validateInstalledActivation(
     treeSha256: record.treeSha256,
   };
   let held: HeldVerifiedSlot | undefined;
+  let validationResult: ValidatedInstalledActivation | undefined;
   let primaryFailure: unknown;
   try {
     held = await openHeldVerifiedSlot(root, target);
@@ -301,29 +308,33 @@ export async function validateInstalledActivation(
     await assertHeldVerifiedSlotBound(held, root);
     await verifyPlatformCodeSignature({
       platform: record.platform,
-      executablePath: candidate.executablePath,
+      executablePath: boundExecutablePath(held),
       targetPolicy: target.custom.codeSigning,
       approvedIdentities: policy.approvedCodeSigningIdentities,
       runCommand: policy.runSigningCommand,
     });
     await assertHeldVerifiedSlotBound(held, root);
-    return { activation, receipt, candidate, slotRoot: root };
+    validationResult = { activation, receipt, candidate, slotRoot: root };
   } catch (error) {
     primaryFailure = error;
-    throw error;
-  } finally {
-    if (held) {
-      try {
-        await disposeHeldVerifiedSlot(held);
-      } catch (error) {
-        if (primaryFailure === undefined) {
-          throw new UpdateError("GOAT_UPDATE_ROLLBACK_INVALID", {
-            cause: error,
-          });
-        }
-      }
+  }
+
+  let disposalFailure: unknown;
+  if (held) {
+    try {
+      await disposeHeldVerifiedSlot(held);
+    } catch (error) {
+      disposalFailure = error;
     }
   }
+
+  if (primaryFailure !== undefined) throw primaryFailure;
+  if (disposalFailure !== undefined) {
+    throw new UpdateError("GOAT_UPDATE_ROLLBACK_INVALID", {
+      cause: disposalFailure,
+    });
+  }
+  return validationResult!;
 }
 
 export async function cleanupSupersededSlots(
@@ -502,4 +513,51 @@ async function assertSameVolume(
 
 function asciiCompare(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function executableEntryPath(held: HeldVerifiedSlot): string {
+  return path.join(
+    held.originalRoot,
+    held.target.custom.platform === "win32"
+      ? "bin/goat-engine.exe"
+      : "bin/goat-engine",
+  );
+}
+
+/**
+ * Return a path that is bound to the already-verified executable file.
+ *
+ * On Linux we pass the file descriptor through /proc/${process.pid}/fd so that external
+ * verification/health tools operate on the exact kernel object that was
+ * validated by the held slot, even if the slot path is swapped between
+ * verification and use. On macOS and Windows we keep the regular path: macOS
+ * tools such as `codesign` do not reliably accept /dev/fd paths, and on
+ * Windows an open handle already prevents replacement of the binary. In all
+ * cases the surrounding code calls `assertHeldVerifiedSlotBound` before and
+ * after each external command.
+ */
+function boundExecutablePath(held: HeldVerifiedSlot): string {
+  if (process.platform !== "linux") {
+    return executableEntryPath(held);
+  }
+
+  const expectedRelativePath =
+    held.target.custom.platform === "win32"
+      ? "bin/goat-engine.exe"
+      : "bin/goat-engine";
+  const entry = held.entries.find(
+    (candidate) => candidate.relativePath === expectedRelativePath,
+  );
+  if (!entry) {
+    throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED");
+  }
+  const fd = entry.handle.fd;
+  if (typeof fd !== "number" || fd < 0) {
+    throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED");
+  }
+
+  // Use the launcher process's own fd table so external tools (which run as
+  // child processes) resolve the path to the file we have opened, not to an
+  // fd in their own table.
+  return `/proc/${process.pid}/fd/${fd}`;
 }

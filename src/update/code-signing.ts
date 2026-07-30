@@ -261,15 +261,18 @@ function minimalToolEnvironment(platform: UpdatePlatform): NodeJS.ProcessEnv {
 
 function powershellPath(systemRoot: string | undefined): string {
   const root = systemRoot ?? process.env.SystemRoot ?? "C:\\Windows";
-  const normalized = path.win32.resolve(root);
+  // Validate the pre-resolve value is absolute so relative input cannot be
+  // turned into an absolute path by resolve. Reject UNC paths and any value
+  // containing control characters.
   if (
-    !path.win32.isAbsolute(normalized) ||
-    normalized.startsWith("\\\\") ||
-    normalized.length > 128 ||
-    /[\r\n\0]/.test(normalized)
+    !path.win32.isAbsolute(root) ||
+    root.startsWith("\\\\") ||
+    /[\r\n\0]/.test(root) ||
+    root.length > 128
   ) {
     throw invalidSignature();
   }
+  const normalized = path.win32.normalize(root);
   return path.win32.join(
     normalized,
     "System32",

@@ -191,6 +191,7 @@ export async function appendUpdateActivationRecord(
   identity: NewActivationIdentity,
   committedAtUnixMs = Date.now(),
 ): Promise<LoadedActivationRecord> {
+  expectNonnegativeInteger(committedAtUnixMs);
   const chain = await loadActivationChain(
     appDataDirectory,
     identity.platform,
@@ -224,6 +225,7 @@ export async function appendRollbackActivationRecord(
   sourceGeneration: number,
   committedAtUnixMs = Date.now(),
 ): Promise<LoadedActivationRecord> {
+  expectNonnegativeInteger(committedAtUnixMs);
   const chain = await loadActivationChain(
     appDataDirectory,
     platform,

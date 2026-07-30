@@ -1,9 +1,11 @@
 import path from "node:path";
 import os from "node:os";
+import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmod, lstat, mkdtemp, realpath, rm } from "node:fs/promises";
+import { chmod, lstat, realpath, rm } from "node:fs/promises";
 import { UpdateError } from "./errors.js";
 import type { UpdatePlatform } from "./schema.js";
+import { ensurePrivateDirectory } from "./durable.js";
 
 export interface HealthCommandResult {
   readonly status: number | null;
@@ -39,8 +41,13 @@ export async function runEngineHealthCheck(
   options: EngineHealthCheckOptions,
 ): Promise<void> {
   await assertRegularExecutable(options.executablePath);
-  const emptyWorkingDirectory = await mkdtemp(
-    path.join(os.tmpdir(), "goat-health-"),
+  // Use a private, launcher-owned directory instead of a publicly writable
+  // temp path. ensurePrivateDirectory rejects links and enforces 0700/strict
+  // canonical placement under the package temp root.
+  const tempRoot = path.join(os.tmpdir(), "goat-health");
+  const emptyWorkingDirectory = await ensurePrivateDirectory(
+    path.join(tempRoot, `goat-health-${randomUUID()}`),
+    "GOAT_UPDATE_HEALTH_CHECK_FAILED",
   );
   try {
     if (process.platform !== "win32") await chmod(emptyWorkingDirectory, 0o700);
@@ -89,6 +96,9 @@ function defaultRunner(
     timeout: options.timeoutMs,
     maxBuffer: options.maxBufferBytes,
     stdio: ["ignore", "pipe", "pipe"],
+    // Use SIGKILL so a candidate that traps SIGTERM cannot block the
+    // bounded health check indefinitely.
+    killSignal: "SIGKILL",
   });
   return {
     status: result.status,

@@ -25,11 +25,18 @@ import {
   type VerifiedUpdatePolicy,
 } from "../../src/update/updater.js";
 
-const appData = path.resolve(process.argv[2] ?? "");
+const rawAppData = process.argv[2] ?? "";
 const killPhase = process.argv[3] as UpdatePhase | undefined;
-if (appData.length === 0 || !killPhase || !UPDATE_PHASES.includes(killPhase)) {
+if (
+  rawAppData.length === 0 ||
+  !path.isAbsolute(rawAppData) ||
+  /[\r\n\0]/.test(rawAppData) ||
+  !killPhase ||
+  !UPDATE_PHASES.includes(killPhase)
+) {
   process.exit(64);
 }
+const appData = path.resolve(rawAppData);
 const context = {
   after() {},
 } as unknown as test.TestContext;

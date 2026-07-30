@@ -160,7 +160,9 @@ export function createTestTufFixture(
       keys: keyMap([...keys.stable, ...keys.beta, ...keys.development]),
       roles: (["stable", "beta", "development"] as const).map((channel) => ({
         name: channel,
-        keyids: keys[channel].map((key) => key.keyId).sort(),
+        keyids: keys[channel]
+          .map((key) => key.keyId)
+          .sort((left, right) => left.localeCompare(right)),
         threshold: 2,
         terminating: true,
         paths: [`goat-engine/${channel}/*`],
@@ -168,8 +170,12 @@ export function createTestTufFixture(
     },
     custom: {
       goatRevocationSchema: 1,
-      revokedKeyIds: [...(options.revokedKeyIds ?? [])].sort(),
-      revokedArtifactSha256: [...(options.revokedArtifactSha256 ?? [])].sort(),
+      revokedKeyIds: [...(options.revokedKeyIds ?? [])].sort((left, right) =>
+        left.localeCompare(right),
+      ),
+      revokedArtifactSha256: [...(options.revokedArtifactSha256 ?? [])].sort(
+        (left, right) => left.localeCompare(right),
+      ),
       revokedReleaseSequences: [
         ...(options.revokedReleaseSequences ?? []),
       ].sort((left, right) => left - right),
@@ -329,7 +335,9 @@ function keyMap(
 
 function role(keys: readonly TestTufKey[], threshold: number) {
   return {
-    keyids: keys.map((key) => key.keyId).sort(),
+    keyids: keys
+      .map((key) => key.keyId)
+      .sort((left, right) => left.localeCompare(right)),
     threshold,
   };
 }
