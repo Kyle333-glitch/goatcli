@@ -158,13 +158,15 @@ async function assertRegularExecutable(executablePath: string): Promise<void> {
     throw new UpdateError("GOAT_UPDATE_HEALTH_CHECK_FAILED");
   }
   try {
-    const stats = await lstat(executablePath);
+    const stats = await lstat(executablePath, { bigint: true });
     const canonical = await realpath(executablePath);
+    const canonicalStats = await lstat(canonical, { bigint: true });
     if (
       !stats.isFile() ||
       stats.isSymbolicLink() ||
-      stats.nlink !== 1 ||
-      path.resolve(canonical) !== path.resolve(executablePath)
+      stats.nlink !== 1n ||
+      stats.dev !== canonicalStats.dev ||
+      stats.ino !== canonicalStats.ino
     ) {
       throw new UpdateError("GOAT_UPDATE_HEALTH_CHECK_FAILED");
     }

@@ -1,7 +1,10 @@
 import path from "node:path";
-import { lstat, realpath } from "node:fs/promises";
+import os from "node:os";
+import { randomUUID } from "node:crypto";
+import { lstat, realpath, rm } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { UpdateError } from "./errors.js";
+import { ensurePrivateDirectory } from "./durable.js";
 import type { CodeSigningPolicy, UpdatePlatform } from "./schema.js";
 
 export type ApprovedCodeSigningIdentity =
@@ -62,23 +65,38 @@ export async function verifyPlatformCodeSignature(
     options.targetPolicy,
     options.approvedIdentities,
   );
-  if (options.platform === "win32") {
+  let toolTempDirectory: string | undefined;
+  if (options.platform !== "win32") {
+    toolTempDirectory = await ensurePrivateDirectory(
+      path.join(os.tmpdir(), `goat-signtmp-${randomUUID()}`),
+      "GOAT_UPDATE_CODE_SIGNATURE_INVALID",
+    );
+  }
+  try {
+    if (options.platform === "win32") {
+      if (
+        options.targetPolicy.scheme !== "authenticode-sha256" ||
+        approved.scheme !== "authenticode-sha256"
+      ) {
+        throw invalidSignature();
+      }
+      verifyWindowsAuthenticode(options, approved, toolTempDirectory);
+      return;
+    }
     if (
-      options.targetPolicy.scheme !== "authenticode-sha256" ||
-      approved.scheme !== "authenticode-sha256"
+      options.targetPolicy.scheme !== "apple-developer-id" ||
+      approved.scheme !== "apple-developer-id"
     ) {
       throw invalidSignature();
     }
-    verifyWindowsAuthenticode(options, approved);
-    return;
+    verifyMacDeveloperId(options, approved, toolTempDirectory);
+  } finally {
+    if (toolTempDirectory !== undefined) {
+      await rm(toolTempDirectory, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
+    }
   }
-  if (
-    options.targetPolicy.scheme !== "apple-developer-id" ||
-    approved.scheme !== "apple-developer-id"
-  ) {
-    throw invalidSignature();
-  }
-  verifyMacDeveloperId(options, approved);
 }
 
 function verifyWindowsAuthenticode(
@@ -87,18 +105,24 @@ function verifyWindowsAuthenticode(
     ApprovedCodeSigningIdentity,
     { scheme: "authenticode-sha256" }
   >,
+  toolTempDirectory: string | undefined,
 ): void {
   const powershell = powershellPath(options.windowsSystemRoot);
-  const result = run(options, powershell, [
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "RemoteSigned",
-    "-Command",
-    POWERSHELL_SIGNATURE_SCRIPT,
-    options.executablePath,
-  ]);
+  const result = run(
+    options,
+    powershell,
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "RemoteSigned",
+      "-Command",
+      POWERSHELL_SIGNATURE_SCRIPT,
+      options.executablePath,
+    ],
+    toolTempDirectory,
+  );
   if (
     result.status !== 0 ||
     result.signal ||
@@ -133,20 +157,22 @@ function verifyMacDeveloperId(
     ApprovedCodeSigningIdentity,
     { scheme: "apple-developer-id" }
   >,
+  toolTempDirectory: string | undefined,
 ): void {
-  const verify = run(options, "/usr/bin/codesign", [
-    "--verify",
-    "--strict",
-    "--verbose=2",
-    options.executablePath,
-  ]);
+  const verify = run(
+    options,
+    "/usr/bin/codesign",
+    ["--verify", "--strict", "--verbose=2", options.executablePath],
+    toolTempDirectory,
+  );
   if (failed(verify)) throw invalidSignature();
 
-  const display = run(options, "/usr/bin/codesign", [
-    "--display",
-    "--verbose=4",
-    options.executablePath,
-  ]);
+  const display = run(
+    options,
+    "/usr/bin/codesign",
+    ["--display", "--verbose=4", options.executablePath],
+    toolTempDirectory,
+  );
   if (failed(display)) throw invalidSignature();
   const lines = display.stderr.split(/\r?\n/);
   const teamIdentifiers = lines
@@ -164,13 +190,12 @@ function verifyMacDeveloperId(
     throw invalidSignature();
   }
 
-  const assessment = run(options, "/usr/sbin/spctl", [
-    "--assess",
-    "--type",
-    "execute",
-    "--verbose=4",
-    options.executablePath,
-  ]);
+  const assessment = run(
+    options,
+    "/usr/sbin/spctl",
+    ["--assess", "--type", "execute", "--verbose=4", options.executablePath],
+    toolTempDirectory,
+  );
   if (failed(assessment)) throw invalidSignature();
 }
 
@@ -207,12 +232,13 @@ function run(
   options: VerifyCodeSignatureOptions,
   command: string,
   args: readonly string[],
+  toolTempDirectory: string | undefined,
 ): VerificationCommandResult {
   const runner = options.runCommand ?? defaultRunner;
   return runner(command, args, {
     timeoutMs: TOOL_TIMEOUT_MS,
     maxBufferBytes: MAX_TOOL_OUTPUT_BYTES,
-    environment: minimalToolEnvironment(options.platform),
+    environment: minimalToolEnvironment(options.platform, toolTempDirectory),
   });
 }
 
@@ -242,7 +268,10 @@ function defaultRunner(
   };
 }
 
-function minimalToolEnvironment(platform: UpdatePlatform): NodeJS.ProcessEnv {
+function minimalToolEnvironment(
+  platform: UpdatePlatform,
+  tempDirectory: string | undefined,
+): NodeJS.ProcessEnv {
   if (platform === "win32") {
     // Only expose the Windows system directory to the signature tool.
     // Publicly writable temp directories are intentionally omitted. The
@@ -252,12 +281,14 @@ function minimalToolEnvironment(platform: UpdatePlatform): NodeJS.ProcessEnv {
       SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
     };
   }
+  // Route any Unix temp usage into a launcher-owned private directory so the
+  // signature tool is not pointed at a publicly writable /tmp.
   return {
     HOME: "/var/empty",
     LANG: "C",
     LC_ALL: "C",
     PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-    TMPDIR: "/tmp",
+    TMPDIR: tempDirectory ?? "/tmp",
   };
 }
 
@@ -291,13 +322,15 @@ function powershellPath(systemRoot: string | undefined): string {
 async function assertRegularExecutable(executablePath: string): Promise<void> {
   if (!path.isAbsolute(executablePath)) throw invalidSignature();
   try {
-    const stats = await lstat(executablePath);
+    const stats = await lstat(executablePath, { bigint: true });
     const canonical = await realpath(executablePath);
+    const canonicalStats = await lstat(canonical, { bigint: true });
     if (
       !stats.isFile() ||
       stats.isSymbolicLink() ||
-      stats.nlink !== 1 ||
-      path.resolve(canonical) !== path.resolve(executablePath)
+      stats.nlink !== 1n ||
+      stats.dev !== canonicalStats.dev ||
+      stats.ino !== canonicalStats.ino
     ) {
       throw invalidSignature();
     }
