@@ -197,7 +197,11 @@ async function openHeldDirectory(
       throw contentMismatch();
     }
     const canonical = await realpath(directoryPath);
-    if (path.resolve(canonical) !== path.resolve(directoryPath)) {
+    const canonicalStats = await lstat(canonical, { bigint: true });
+    if (
+      !canonicalStats.isDirectory() ||
+      !sameIdentity(identity(opened), identity(canonicalStats))
+    ) {
       throw contentMismatch();
     }
     return {
