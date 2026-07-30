@@ -100,7 +100,7 @@ export async function extractVerifiedArchive(
     if (error instanceof UpdateError) throw error;
     throw new UpdateError("GOAT_UPDATE_ARCHIVE_INVALID", { cause: error });
   } finally {
-    plan?.zip.close();
+    plan?.zip.on("error", () => undefined).close();
   }
 }
 
@@ -289,7 +289,7 @@ async function preflightArchive(
     );
     return { zip, entries: planned };
   } catch (error) {
-    zip.close();
+    zip.on("error", () => undefined).close();
     throw error;
   }
 }
