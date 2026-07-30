@@ -68,6 +68,7 @@ export interface RecoveryResult {
   readonly status: "pristine" | "ready" | "rolled-back";
   readonly state: LoadedUpdaterState | null;
   readonly active: ValidatedInstalledActivation | null;
+  readonly checkpoints: LoadedMetadataCheckpointChain;
   readonly recoveredTransactionIds: readonly string[];
   readonly quarantinedStatePath: string | null;
 }
@@ -257,6 +258,7 @@ export async function recoverInstallation(
       status: "pristine",
       state: null,
       active: null,
+      checkpoints,
       recoveredTransactionIds,
       quarantinedStatePath,
     };
@@ -331,6 +333,7 @@ export async function recoverInstallation(
     status,
     state: loadedState,
     active,
+    checkpoints,
     recoveredTransactionIds,
     quarantinedStatePath,
   };

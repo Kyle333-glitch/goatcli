@@ -44,9 +44,8 @@ export async function runEngineHealthCheck(
   // Use a private, launcher-owned directory instead of a publicly writable
   // temp path. ensurePrivateDirectory rejects links and enforces 0700/strict
   // canonical placement under the package temp root.
-  const tempRoot = path.join(os.tmpdir(), "goat-health");
   const emptyWorkingDirectory = await ensurePrivateDirectory(
-    path.join(tempRoot, `goat-health-${randomUUID()}`),
+    path.join(os.tmpdir(), `goat-health-${randomUUID()}`),
     "GOAT_UPDATE_HEALTH_CHECK_FAILED",
   );
   try {

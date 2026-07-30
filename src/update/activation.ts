@@ -111,7 +111,7 @@ export async function activateCandidate(
         input.policy,
       );
     } catch (error) {
-      throwError("GOAT_UPDATE_ROLLBACK_INVALID", error);
+      throw new UpdateError("GOAT_UPDATE_ROLLBACK_INVALID", { cause: error });
     }
   }
   await input.observer?.preparedRollback?.();
@@ -160,7 +160,7 @@ export async function activateCandidate(
   try {
     held = await openHeldVerifiedSlot(destination, finalized.target);
     if (held.treeSha256 !== finalized.treeSha256) {
-      throwError("GOAT_UPDATE_ACTIVATION_FAILED");
+      throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED");
     }
     const compatible = validateCandidateCompatibilityBytes(
       placed,
@@ -168,7 +168,7 @@ export async function activateCandidate(
       input.policy.compatibility,
     );
     if (compatible.manifestSha256 !== held.manifestSha256) {
-      throwError("GOAT_UPDATE_ACTIVATION_FAILED");
+      throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED");
     }
 
     await assertHeldVerifiedSlotBound(held, destination);
@@ -259,7 +259,7 @@ export async function validateInstalledActivation(
     record.platform !== policy.compatibility.platform ||
     record.architecture !== policy.compatibility.architecture
   ) {
-    throwError("GOAT_UPDATE_ROLLBACK_INVALID");
+    throw new UpdateError("GOAT_UPDATE_ROLLBACK_INVALID");
   }
   const receipt = await loadTargetReceipt(
     appDataDirectory,
@@ -274,7 +274,7 @@ export async function validateInstalledActivation(
     target.custom.goatEngineVersion !== record.goatEngineVersion ||
     target.sha256 !== record.artifactSha256
   ) {
-    throwError("GOAT_UPDATE_ROLLBACK_INVALID");
+    throw new UpdateError("GOAT_UPDATE_ROLLBACK_INVALID");
   }
   const root = slotRoot(appDataDirectory, record);
   await assertNoLinkOrReparsePath(path.resolve(appDataDirectory), root);
@@ -292,7 +292,7 @@ export async function validateInstalledActivation(
       held.treeSha256 !== record.treeSha256 ||
       held.slotSealSha256 !== record.slotSealSha256
     ) {
-      throwError("GOAT_UPDATE_ROLLBACK_INVALID");
+      throw new UpdateError("GOAT_UPDATE_ROLLBACK_INVALID");
     }
     const candidate = validateCandidateCompatibilityBytes(
       staged,
@@ -303,7 +303,7 @@ export async function validateInstalledActivation(
       candidate.manifestSha256 !== record.manifestSha256 ||
       candidate.manifestSha256 !== held.manifestSha256
     ) {
-      throwError("GOAT_UPDATE_ROLLBACK_INVALID");
+      throw new UpdateError("GOAT_UPDATE_ROLLBACK_INVALID");
     }
     await assertHeldVerifiedSlotBound(held, root);
     await verifyPlatformCodeSignature({
@@ -363,7 +363,7 @@ export async function cleanupSupersededSlots(
       entries = await readdir(releases, { withFileTypes: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throwError("GOAT_UPDATE_ACTIVATION_FAILED", error);
+      throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED", { cause: error });
     }
     for (const entry of entries) {
       const candidate = path.resolve(releases, entry.name);
@@ -372,7 +372,7 @@ export async function cleanupSupersededSlots(
         entry.isSymbolicLink() ||
         !/^\d+-[0-9A-Za-z.-]+-[a-f0-9]{12}$/.test(entry.name)
       ) {
-        throwError("GOAT_UPDATE_RECOVERY_REQUIRED");
+        throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
       }
       if (keep.has(candidate)) continue;
       try {
@@ -398,7 +398,7 @@ function assertCandidatePolicyBinding(
     policy.receipt.embeddedRootSha256.length !== 64 ||
     policy.compatibility.releasePolicyDigest.length !== 64
   ) {
-    throwError("GOAT_UPDATE_COMPATIBILITY_FAILED");
+    throw new UpdateError("GOAT_UPDATE_COMPATIBILITY_FAILED");
   }
 }
 
@@ -413,13 +413,13 @@ function assertReceiptMatchesCandidate(
     receipt.target.custom.releaseSequence !==
       staged.target.custom.releaseSequence
   ) {
-    throwError("GOAT_UPDATE_METADATA_MISMATCH");
+    throw new UpdateError("GOAT_UPDATE_METADATA_MISMATCH");
   }
 }
 function normalizeTransactionId(transactionId: string | undefined): string {
   const normalized = transactionId ?? randomBytes(16).toString("hex");
   if (!/^[a-f0-9]{32}$/.test(normalized)) {
-    throwError("GOAT_UPDATE_ACTIVATION_FAILED");
+    throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED");
   }
   return normalized;
 }
@@ -451,7 +451,7 @@ async function renameAndSync(
     await syncDirectory(directory, "GOAT_UPDATE_ACTIVATION_FAILED");
   } catch (error) {
     if (error instanceof UpdateError) throw error;
-    throwError("GOAT_UPDATE_ACTIVATION_FAILED", error);
+    throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED", { cause: error });
   }
 }
 
@@ -480,11 +480,11 @@ async function ensureReleaseDirectory(
 async function assertAbsent(target: string): Promise<void> {
   try {
     await lstat(target);
-    throwError("GOAT_UPDATE_ACTIVATION_FAILED");
+    throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED");
   } catch (error) {
     if (error instanceof UpdateError) throw error;
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throwError("GOAT_UPDATE_ACTIVATION_FAILED", error);
+      throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED", { cause: error });
     }
   }
 }
@@ -509,11 +509,11 @@ async function assertSameVolume(
       sourceStats.dev !== canonicalStats.dev ||
       sourceStats.ino !== canonicalStats.ino
     ) {
-      throwError("GOAT_UPDATE_ACTIVATION_FAILED");
+      throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED");
     }
   } catch (error) {
     if (error instanceof UpdateError) throw error;
-    throwError("GOAT_UPDATE_ACTIVATION_FAILED", error);
+    throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED", { cause: error });
   }
 }
 
@@ -555,22 +555,15 @@ function boundExecutablePath(held: HeldVerifiedSlot): string {
     (candidate) => candidate.relativePath === expectedRelativePath,
   );
   if (!entry) {
-    throwError("GOAT_UPDATE_ACTIVATION_FAILED");
+    throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED");
   }
   const fd = entry.handle.fd;
   if (typeof fd !== "number" || fd < 0) {
-    throwError("GOAT_UPDATE_ACTIVATION_FAILED");
+    throw new UpdateError("GOAT_UPDATE_ACTIVATION_FAILED");
   }
 
   // Use the launcher process's own fd table so external tools (which run as
   // child processes) resolve the path to the file we have opened, not to an
   // fd in their own table.
   return `/proc/${process.pid}/fd/${fd}`;
-}
-
-function throwError(code: string, cause?: unknown): never {
-  if (cause === undefined) {
-    throw new UpdateError(code as any);
-  }
-  throw new UpdateError(code as any, { cause });
 }

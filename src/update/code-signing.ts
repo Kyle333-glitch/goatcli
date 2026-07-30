@@ -282,13 +282,17 @@ function minimalToolEnvironment(
     };
   }
   // Route any Unix temp usage into a launcher-owned private directory so the
-  // signature tool is not pointed at a publicly writable /tmp.
+  // signature tool is not pointed at a publicly writable /tmp. The caller
+  // always supplies this directory on non-Windows platforms.
+  if (tempDirectory === undefined) {
+    throw invalidSignature();
+  }
   return {
     HOME: "/var/empty",
     LANG: "C",
     LC_ALL: "C",
     PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-    TMPDIR: tempDirectory ?? "/tmp",
+    TMPDIR: tempDirectory,
   };
 }
 

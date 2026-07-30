@@ -132,7 +132,7 @@ export async function runVerifiedUpdate(
   try {
     if (!recovered) {
       failed = true;
-      throwRecoveryRequired();
+      throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
     }
     return await runLockedUpdate(options, recovered, now);
   } catch (error) {
@@ -158,18 +158,7 @@ async function runLockedUpdate(
       options.appDataDirectory,
       initialUpdaterState(),
     ));
-  let metadataCheckpoints = await loadMetadataCheckpointChain(
-    options.appDataDirectory,
-    options.policy,
-  );
-  console.error(
-    "DEBUG runLockedUpdate appData=%s metadataGeneration=%s metadataHeadSha=%s stateCheckpointGen=%s stateCheckpointSha=%s",
-    options.appDataDirectory,
-    metadataCheckpoints.head.generation,
-    metadataCheckpoints.head.sha256,
-    state.record.metadataCheckpointGeneration,
-    state.record.metadataCheckpointSha256,
-  );
+  let metadataCheckpoints = recovered.checkpoints;
   assertStateCheckpoint(state, metadataCheckpoints);
   const channel = options.requestedChannel ?? state.record.configuredChannel;
   const transportOptions = {
@@ -556,10 +545,6 @@ function assertStateCheckpoint(
 
 function throwStateInvalid(): never {
   throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
-}
-
-function throwRecoveryRequired(): never {
-  throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
 }
 
 function throwUpdateDisabled(): never {
