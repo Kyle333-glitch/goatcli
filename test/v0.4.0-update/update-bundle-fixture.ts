@@ -47,6 +47,7 @@ import {
 import type { HeldVerifiedArtifact } from "../../src/update/download.js";
 import { disposeHeldArtifact } from "../../src/update/download.js";
 import {
+  buildTargetReceipt,
   persistTargetReceipt,
   type PersistedTargetReceipt,
   type ReceiptVerificationPolicy,
@@ -100,6 +101,7 @@ export interface TestUpdateBundleOptions {
   readonly releaseSequence?: number;
   readonly productVersion?: string;
   readonly executableBytes?: Buffer;
+  readonly persistReceipt?: boolean;
   readonly healthSucceeds?: boolean;
   readonly signingSucceeds?: boolean;
   readonly trust?: TestBundleTrust;
@@ -216,21 +218,28 @@ export async function createTestUpdateBundle(
     platform,
     architecture,
   };
-  const receipt = await persistTargetReceipt(
-    appData,
-    {
-      embeddedRootSha256: tuf.rootSha256,
-      sequentialRoots: [],
-      timestamp: tuf.timestamp,
-      snapshot: tuf.snapshot,
-      targets: tuf.targets,
-      channel: tuf.channels[channel],
-      channelName: channel,
-      targetPath: tuf.targetPaths[channel],
-      authenticatedAtUnixMs: Date.parse("2030-01-01T00:00:00Z"),
-    },
-    receiptPolicy,
-  );
+  const receiptInput = {
+    embeddedRootSha256: tuf.rootSha256,
+    sequentialRoots: [],
+    timestamp: tuf.timestamp,
+    snapshot: tuf.snapshot,
+    targets: tuf.targets,
+    channel: tuf.channels[channel],
+    channelName: channel,
+    targetPath: tuf.targetPaths[channel],
+    authenticatedAtUnixMs: Date.parse("2030-01-01T00:00:00Z"),
+  };
+  const receipt: PersistedTargetReceipt =
+    options.persistReceipt === false
+      ? (() => {
+          const verified = buildTargetReceipt(receiptInput, receiptPolicy);
+          return {
+            ...verified,
+            path: "",
+            bytes: canonicalJsonBytes(verified.record as unknown as JsonValue),
+          };
+        })()
+      : await persistTargetReceipt(appData, receiptInput, receiptPolicy);
   const compatibilityPolicy: CandidateCompatibilityPolicy = {
     launcherVersion: "0.4.0",
     releasePolicyDigest,

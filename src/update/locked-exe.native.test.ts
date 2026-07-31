@@ -150,6 +150,7 @@ test("Windows locked active executable preserves existing installation and defer
       releaseSequence: 2,
       productVersion: "0.4.2",
       executableBytes: Buffer.from("v2"),
+      persistReceipt: false,
     });
     await cleanupUpdateTransaction(second.transaction);
     const secondServer = new MockManifestServer();

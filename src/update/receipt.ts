@@ -126,11 +126,10 @@ const ROLES = [
   "development",
 ] as const;
 
-export async function persistTargetReceipt(
-  appDataDirectory: string,
+export function buildTargetReceipt(
   input: TargetReceiptInput,
   policy: ReceiptVerificationPolicy,
-): Promise<PersistedTargetReceipt> {
+): VerifiedTargetReceipt {
   if (input.embeddedRootSha256 !== policy.embeddedRootSha256) {
     throw new UpdateError("GOAT_UPDATE_SIGNATURE_INVALID");
   }
@@ -144,7 +143,16 @@ export async function persistTargetReceipt(
     productVersion: authenticated.target.custom.productVersion,
   };
   const bytes = canonicalJsonBytes(record as unknown as JsonValue);
-  const verified = verifyTargetReceiptBytes(bytes, policy);
+  return verifyTargetReceiptBytes(bytes, policy);
+}
+
+export async function persistTargetReceipt(
+  appDataDirectory: string,
+  input: TargetReceiptInput,
+  policy: ReceiptVerificationPolicy,
+): Promise<PersistedTargetReceipt> {
+  const verified = buildTargetReceipt(input, policy);
+  const bytes = canonicalJsonBytes(verified.record as unknown as JsonValue);
   const receiptSha256 = sha256(bytes);
   const receiptPath = await writeImmutableFile(
     receiptDirectory(appDataDirectory),
