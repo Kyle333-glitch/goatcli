@@ -3,7 +3,9 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import type { ActivationSecurityPolicy } from "./activation.js";
 import { validateInstalledActivation } from "./activation.js";
 import { loadActivationChain } from "./activation-record.js";
@@ -12,6 +14,9 @@ import { UPDATE_PHASES } from "./journal.js";
 import { acquireUpdateLock } from "./lock.js";
 import { recoverInstallation } from "./recovery.js";
 import { loadUpdaterState } from "./state.js";
+
+const require = createRequire(import.meta.url);
+const TSX_LOADER = pathToFileURL(require.resolve("tsx")).href;
 
 interface SerializedCrashPolicy {
   readonly schema: 1;
@@ -106,9 +111,9 @@ async function runCrashWorker(
   );
   const child = spawn(
     process.execPath,
-    ["--import", "tsx", worker, appData, phase],
+    ["--import", TSX_LOADER, worker, phase],
     {
-      cwd: process.cwd(),
+      cwd: appData,
       windowsHide: true,
       stdio: ["ignore", "ignore", "pipe"],
     },

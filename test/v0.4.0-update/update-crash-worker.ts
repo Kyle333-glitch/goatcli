@@ -5,7 +5,7 @@
  * exact durable transition. No failure-injection switch is exposed by the
  * production CLI.
  */
-import { writeFile } from "node:fs/promises";
+import { lstat, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type test from "node:test";
@@ -26,23 +26,15 @@ import {
   type VerifiedUpdatePolicy,
 } from "../../src/update/updater.js";
 
-const rawAppData = process.argv[2] ?? "";
-const killPhase = process.argv[3] as UpdatePhase | undefined;
-if (
-  rawAppData.length === 0 ||
-  !path.isAbsolute(rawAppData) ||
-  /[\r\n\0]/.test(rawAppData) ||
-  !killPhase ||
-  !UPDATE_PHASES.includes(killPhase)
-) {
+const killPhase = process.argv[2] as UpdatePhase | undefined;
+if (!killPhase || !UPDATE_PHASES.includes(killPhase)) {
   process.exit(64);
 }
-const appData = path.resolve(rawAppData);
-// Re-validate after canonicalization so any symlink/control-character
-// manipulation introduced by path.resolve is caught before use. Reject
-// traversal segments that would escape an otherwise absolute path, and
-// require the path to remain inside a known test root.
-if (!isInsideTestRoot(appData)) {
+// The parent test supplies the already-created app-data directory as the
+// process working directory, not as attacker-controlled CLI data. Validate the
+// OS-provided cwd before using it for any test fixture writes.
+const appData = await validatedAppDataPath(process.cwd());
+if (appData === null) {
   process.exit(64);
 }
 const context = {
@@ -118,22 +110,37 @@ async function repositoryServer(
   return server;
 }
 
-function isInsideTestRoot(resolved: string): boolean {
-  if (
-    !path.isAbsolute(resolved) ||
-    /[\r\n\0]/.test(resolved) ||
-    resolved.split(path.sep).includes("..")
-  ) {
-    return false;
+async function validatedAppDataPath(rawPath: string): Promise<string | null> {
+  try {
+    const lexical = path.resolve(rawPath);
+    const tmpRoot = await realpath(os.tmpdir());
+    const [rawStats, canonical] = await Promise.all([
+      lstat(lexical),
+      realpath(lexical),
+    ]);
+    const canonicalStats = await lstat(canonical);
+    const relative = path.relative(tmpRoot, canonical);
+    const basename = path.basename(canonical);
+    if (
+      !rawStats.isDirectory() ||
+      rawStats.isSymbolicLink() ||
+      !canonicalStats.isDirectory() ||
+      canonicalStats.isSymbolicLink() ||
+      rawStats.dev !== canonicalStats.dev ||
+      rawStats.ino !== canonicalStats.ino ||
+      !/^goat-kill-[0-9]+-[A-Za-z0-9]+$/.test(basename) ||
+      relative.length === 0 ||
+      path.isAbsolute(relative) ||
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      relative.includes(path.sep)
+    ) {
+      return null;
+    }
+    return canonical;
+  } catch {
+    return null;
   }
-  const tmpRoot = path.resolve(os.tmpdir());
-  const cwdRoot = path.resolve(process.cwd());
-  const relativeToTmp = path.relative(tmpRoot, resolved);
-  const relativeToCwd = path.relative(cwdRoot, resolved);
-  if (relativeToTmp.startsWith("..") && relativeToCwd.startsWith("..")) {
-    return false;
-  }
-  return true;
 }
 
 function updateOptions(bundle: TestUpdateBundle, server: MockManifestServer) {

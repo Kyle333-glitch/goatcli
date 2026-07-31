@@ -129,22 +129,37 @@ export async function runVerifiedUpdate(
     },
   });
   let failed = false;
+  let result: VerifiedUpdateResult | undefined;
+  let operationError: unknown;
   try {
     if (!recovered) {
-      failed = true;
       throw new UpdateError("GOAT_UPDATE_RECOVERY_REQUIRED");
     }
-    return await runLockedUpdate(options, recovered, now);
+    result = await runLockedUpdate(options, recovered, now);
   } catch (error) {
     failed = true;
-    throw error;
-  } finally {
-    try {
-      await lock.release();
-    } catch (error) {
-      if (!failed) throw error;
-    }
+    operationError = error;
   }
+
+  let releaseFailed = false;
+  let releaseError: unknown;
+  try {
+    await lock.release();
+  } catch (error) {
+    releaseFailed = true;
+    releaseError = error;
+  }
+
+  // Release failures are secondary when the update itself failed, preserving
+  // the actionable primary error. On success, a release failure must still be
+  // surfaced, but this decision is made outside finally so control flow stays
+  // explicit and no jump statement is hidden in cleanup.
+  if (failed) throw operationError;
+  if (releaseFailed) throw releaseError;
+  if (result === undefined) {
+    throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
+  }
+  return result;
 }
 
 async function runLockedUpdate(
