@@ -115,7 +115,12 @@ test("native fixture engine passes the launcher health check", async (context) =
       // On Windows the fixture executable may still be held briefly by the
       // kernel after spawnSync returns; the directory is under the OS temp
       // path, so leaving it is harmless for a test-only artifact.
-      if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+      if (
+        process.platform !== "win32" ||
+        (error as NodeJS.ErrnoException).code !== "EPERM"
+      ) {
+        throw error;
+      }
     }
   });
 

@@ -410,11 +410,7 @@ function validateCheckpointCoversReceipts(
   const checkpoint = checkpoints.trustedMetadata;
   const receipt = reconstruction.trustedMetadata;
   if (checkpoint.trustedTimeUnixMs < receipt.trustedTimeUnixMs) {
-    throw new UpdateError("GOAT_UPDATE_STATE_INVALID", {
-      cause: new Error(
-        `trustedTimeUnixMs mismatch: checkpoint=${checkpoint.trustedTimeUnixMs}, receipt=${receipt.trustedTimeUnixMs}`,
-      ),
-    });
+    throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
   }
   for (const role of TRUSTED_METADATA_ROLES) {
     const checkpointVersion = checkpoint.versions[role];
@@ -424,11 +420,7 @@ function validateCheckpointCoversReceipts(
       (checkpointVersion === receiptVersion &&
         checkpoint.digests[role] !== receipt.digests[role])
     ) {
-      throw new UpdateError("GOAT_UPDATE_STATE_INVALID", {
-        cause: new Error(
-          `role ${String(role)} mismatch: checkpoint v${checkpointVersion} (${checkpoint.digests[role]}) vs receipt v${receiptVersion} (${receipt.digests[role]})`,
-        ),
-      });
+      throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
     }
   }
   if (
@@ -442,11 +434,7 @@ function validateCheckpointCoversReceipts(
       receipt.revokedReleaseSequences,
     )
   ) {
-    throw new UpdateError("GOAT_UPDATE_STATE_INVALID", {
-      cause: new Error(
-        `revocations mismatch: checkpoint rev=${JSON.stringify(checkpoint.revokedKeyIds)}/${JSON.stringify(checkpoint.revokedArtifactSha256)}/${JSON.stringify(checkpoint.revokedReleaseSequences)} receipt rev=${JSON.stringify(receipt.revokedKeyIds)}/${JSON.stringify(receipt.revokedArtifactSha256)}/${JSON.stringify(receipt.revokedReleaseSequences)}`,
-      ),
-    });
+    throw new UpdateError("GOAT_UPDATE_STATE_INVALID");
   }
 }
 

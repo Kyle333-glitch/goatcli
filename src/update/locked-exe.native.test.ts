@@ -165,7 +165,7 @@ test("Windows locked active executable preserves existing installation and defer
     await secondServer.listen();
     context.after(() => secondServer.close());
 
-    const result = await runVerifiedUpdate({
+    const result2 = await runVerifiedUpdate({
       appDataDirectory: second.appData,
       policy: policyFor(second, secondServer.origin),
       now: () => Date.parse("2030-01-01T00:00:00Z"),
@@ -173,11 +173,48 @@ test("Windows locked active executable preserves existing installation and defer
       httpsAgent: secondServer.agent,
     });
 
-    assert.equal(result.status, "updated");
-    assert.equal(result.releaseSequence, 2);
-    assert.ok(result.deferredCleanupPaths.length > 0);
+    assert.equal(result2.status, "updated");
+    assert.equal(result2.releaseSequence, 2);
+
+    // The previous activation is always preserved for rollback, so a second
+    // update leaves Release 1 in the keep set. Run a third update so Release 1
+    // becomes truly superseded; while the handle keeps its executable locked,
+    // cleanup defers removal.
+    const third = await createTestUpdateBundle(context, {
+      trust,
+      appData: first.appData,
+      channel: "stable",
+      releaseSequence: 3,
+      productVersion: "0.4.3",
+      executableBytes: Buffer.from("v3"),
+      persistReceipt: false,
+    });
+    await cleanupUpdateTransaction(third.transaction);
+    const thirdServer = new MockManifestServer();
+    thirdServer.bytes("/metadata/timestamp.json", third.tuf.timestamp);
+    thirdServer.bytes("/metadata/snapshot.json", third.tuf.snapshot);
+    thirdServer.bytes("/metadata/targets.json", third.tuf.targets);
+    thirdServer.bytes("/metadata/stable.json", third.tuf.channels.stable);
+    thirdServer.bytes(
+      consistentSnapshotArtifactPath(third.receipt.target),
+      third.archive,
+    );
+    await thirdServer.listen();
+    context.after(() => thirdServer.close());
+
+    const result3 = await runVerifiedUpdate({
+      appDataDirectory: third.appData,
+      policy: policyFor(third, thirdServer.origin),
+      now: () => Date.parse("2030-01-01T00:00:00Z"),
+      waitBeforeRetry: async () => undefined,
+      httpsAgent: thirdServer.agent,
+    });
+
+    assert.equal(result3.status, "updated");
+    assert.equal(result3.releaseSequence, 3);
+    assert.ok(result3.deferredCleanupPaths.length > 0);
     assert.ok(
-      result.deferredCleanupPaths.some(
+      result3.deferredCleanupPaths.some(
         (p) => path.resolve(p) === path.resolve(activeSlot),
       ),
     );
