@@ -25,18 +25,27 @@ jobs:
           - os: windows-latest
             arch: x64
             test_shard: "1/1"
+            test_excludes: ""
+          # The locked-image test is covered by the Windows x64 job above.
+          # Windows ARM can hang while terminating that native fixture after
+          # the assertion, so keep the remaining ARM suite independently
+          # bounded and do not run that unsupported file-lock scenario there.
           - os: windows-11-arm
             arch: arm64
             test_shard: "1/2"
+            test_excludes: "!src/update/locked-exe.native.test.ts"
           - os: windows-11-arm
             arch: arm64
             test_shard: "2/2"
+            test_excludes: "!src/update/locked-exe.native.test.ts"
           - os: macos-latest
             arch: arm64
             test_shard: "1/1"
+            test_excludes: ""
           - os: macos-15-intel
             arch: x64
             test_shard: "1/1"
+            test_excludes: ""
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
@@ -114,9 +123,15 @@ jobs:
 
       - name: Run test shard (${{ matrix.test_shard }})
         shell: bash
+        env:
+          TEST_EXCLUDES: ${{ matrix.test_excludes }}
         run: |
           set -o pipefail
-          npm run test:ci -- --test-shard=${{ matrix.test_shard }} "src/**/*.test.ts" "test/**/*.test.ts" --test-reporter=tap | tee test-output.log
+          test_args=("src/**/*.test.ts" "test/**/*.test.ts")
+          if [[ -n "$TEST_EXCLUDES" ]]; then
+            test_args+=("$TEST_EXCLUDES")
+          fi
+          npm run test:ci -- --test-shard="${{ matrix.test_shard }}" "${test_args[@]}" --test-reporter=tap | tee test-output.log
         timeout-minutes: 20
 
       - name: Check for unexpectedly skipped native tests
