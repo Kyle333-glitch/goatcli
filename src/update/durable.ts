@@ -36,16 +36,14 @@ export async function assertPrivateDirectory(
   errorCode: UpdateErrorCode = "GOAT_UPDATE_STATE_INVALID",
 ): Promise<void> {
   try {
-    const stats = await lstat(directory);
+    const stats = await lstat(directory, { bigint: true });
     if (!stats.isDirectory() || stats.isSymbolicLink()) {
       throw new UpdateError(errorCode);
     }
     const canonical = await realpath(directory);
-    // Compare by device/inode so Windows short-name/long-name aliases and
-    // case variations do not cause a false mismatch. A symlink/junction would
-    // either have been rejected by lstat above or would resolve to a different
-    // physical directory and therefore fail this identity check.
-    const canonicalStats = await lstat(canonical);
+    // Compare exact device/inode identities so large filesystem identifiers
+    // cannot lose precision during a Number conversion.
+    const canonicalStats = await lstat(canonical, { bigint: true });
     if (stats.dev !== canonicalStats.dev || stats.ino !== canonicalStats.ino) {
       throw new UpdateError(errorCode);
     }
