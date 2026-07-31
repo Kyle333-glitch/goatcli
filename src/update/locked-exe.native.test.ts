@@ -98,6 +98,7 @@ test("Windows locked active executable preserves existing installation and defer
     trust,
     channel: "stable",
     releaseSequence: 1,
+    productVersion: "0.4.1",
     executableBytes: Buffer.from("v1"),
   });
   await cleanupUpdateTransaction(first.transaction);
@@ -147,6 +148,7 @@ test("Windows locked active executable preserves existing installation and defer
       appData: first.appData,
       channel: "stable",
       releaseSequence: 2,
+      productVersion: "0.4.2",
       executableBytes: Buffer.from("v2"),
     });
     await cleanupUpdateTransaction(second.transaction);

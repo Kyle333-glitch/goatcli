@@ -98,6 +98,7 @@ export interface TestUpdateBundleOptions {
   readonly architecture?: UpdateArchitecture;
   readonly channel?: UpdateChannel;
   readonly releaseSequence?: number;
+  readonly productVersion?: string;
   readonly executableBytes?: Buffer;
   readonly healthSucceeds?: boolean;
   readonly signingSucceeds?: boolean;
@@ -128,7 +129,7 @@ export async function createTestUpdateBundle(
   const architecture = options.architecture ?? runtimeArchitecture();
   const channel = options.channel ?? "stable";
   const releaseSequence = options.releaseSequence ?? 1;
-  const productVersion = channelVersion(channel, releaseSequence);
+  const productVersion = options.productVersion ?? channelVersion(channel, releaseSequence);
   const executableBytes =
     options.executableBytes ??
     Buffer.from(`TEST-ONLY engine ${channel} ${releaseSequence}`, "utf8");
