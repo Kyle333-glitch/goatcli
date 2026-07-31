@@ -24,7 +24,8 @@
     "test:privacy": "npm run build && node --import tsx --test \"src/auth/*.test.ts\" \"src/commands/*.test.ts\" \"src/engine/privacy-*.test.ts\" \"src/privacy/*.test.ts\"",
     "test:cross-repo": "node ./scripts/test-cross-repo.mjs",
     "privacy:check": "node ./scripts/check-privacy-architecture.mjs",
-    "test": "npm run build && node --import tsx --test \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
+    "test:ci": "npm run build && node --import tsx --test",
+    "test": "npm run test:ci -- \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
     "verify:package": "npm run build && npm run privacy:check && node ./scripts/verify-package.mjs",
     "prepublishOnly": "npm run format:check && npm run typecheck && npm test && npm run verify:package"
   },

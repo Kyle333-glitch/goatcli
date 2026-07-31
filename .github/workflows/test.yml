@@ -17,19 +17,26 @@ permissions:
 
 jobs:
   verify:
-    name: verify (${{ matrix.os }} / ${{ matrix.arch }})
+    name: verify (${{ matrix.os }} / ${{ matrix.arch }} / shard ${{ matrix.test_shard }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
             arch: x64
+            test_shard: "1/1"
           - os: windows-11-arm
             arch: arm64
+            test_shard: "1/2"
+          - os: windows-11-arm
+            arch: arm64
+            test_shard: "2/2"
           - os: macos-latest
             arch: arm64
+            test_shard: "1/1"
           - os: macos-15-intel
             arch: x64
+            test_shard: "1/1"
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
@@ -105,11 +112,11 @@ jobs:
         run: npm run typecheck
         timeout-minutes: 5
 
-      - name: Run full test suite
+      - name: Run test shard (${{ matrix.test_shard }})
         shell: bash
         run: |
           set -o pipefail
-          npm test -- --test-reporter=tap | tee test-output.log
+          npm run test:ci -- --test-shard=${{ matrix.test_shard }} "src/**/*.test.ts" "test/**/*.test.ts" --test-reporter=tap | tee test-output.log
         timeout-minutes: 20
 
       - name: Check for unexpectedly skipped native tests
