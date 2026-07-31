@@ -1,5 +1,6 @@
-import { spawnSync } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -33,18 +34,23 @@ function findCompiler():
   for (const compiler of [
     {
       command: "gcc",
+      probeArgs: ["--version"],
       args: (output: string, source: string) => [source, "-o", output],
     },
     {
       command: "cc",
+      probeArgs: ["--version"],
       args: (output: string, source: string) => [source, "-o", output],
     },
+    // MSVC's cl.exe does not support --version; `cl /?` prints usage and
+    // exits successfully on a working Visual Studio installation.
     {
       command: "cl",
+      probeArgs: ["/?"],
       args: (output: string, source: string) => [source, `/Fe:${output}`],
     },
   ]) {
-    const result = spawnSync(compiler.command, ["--version"], {
+    const result = spawnSync(compiler.command, compiler.probeArgs, {
       shell: false,
       windowsHide: true,
       timeout: 5000,
@@ -93,13 +99,24 @@ test("Windows locked active executable preserves existing installation and defer
     return;
   }
 
+  const fixtureRoot = await mkdtemp(
+    path.join(await realpath(os.tmpdir()), "goat-locked-exe-fixture-"),
+  );
+  const fixturePath = compileFixture(compiler, fixtureRoot);
+  const fixtureBytes = readFileSync(fixturePath);
+  context.after(async () => {
+    await rm(fixtureRoot, { recursive: true, force: true }).catch(
+      () => undefined,
+    );
+  });
+
   const trust = createTestBundleTrust();
   const first = await createTestUpdateBundle(context, {
     trust,
     channel: "stable",
     releaseSequence: 1,
     productVersion: "0.4.1",
-    executableBytes: Buffer.from("v1"),
+    executableBytes: fixtureBytes,
   });
   await cleanupUpdateTransaction(first.transaction);
   const firstServer = new MockManifestServer();
@@ -141,7 +158,19 @@ test("Windows locked active executable preserves existing installation and defer
     ...first.engineManifest.executablePath.split("/"),
   );
 
-  const handle = openSync(activeExe, "r");
+  const child = spawn(activeExe, ["--hold"], {
+    shell: false,
+    windowsHide: true,
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.removeListener("error", reject);
+      resolve();
+    });
+  });
+  assert.ok(child.pid, "fixture engine did not spawn with a valid pid");
   try {
     const second = await createTestUpdateBundle(context, {
       trust,
@@ -149,7 +178,7 @@ test("Windows locked active executable preserves existing installation and defer
       channel: "stable",
       releaseSequence: 2,
       productVersion: "0.4.2",
-      executableBytes: Buffer.from("v2"),
+      executableBytes: fixtureBytes,
       persistReceipt: false,
     });
     await cleanupUpdateTransaction(second.transaction);
@@ -186,7 +215,7 @@ test("Windows locked active executable preserves existing installation and defer
       channel: "stable",
       releaseSequence: 3,
       productVersion: "0.4.3",
-      executableBytes: Buffer.from("v3"),
+      executableBytes: fixtureBytes,
       persistReceipt: false,
     });
     await cleanupUpdateTransaction(third.transaction);
@@ -219,7 +248,23 @@ test("Windows locked active executable preserves existing installation and defer
       ),
     );
   } finally {
-    closeSync(handle);
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The process may already have exited; ignore kill failures so cleanup
+      // still runs.
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        once(child, "exit"),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), 5000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 });
 
