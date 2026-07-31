@@ -207,6 +207,7 @@ export async function createTestUpdateBundle(
     artifactLength: archive.byteLength,
     artifactSha256: sha256(archive),
     codeSigningIdentityId,
+    productVersion,
   });
   const receiptPolicy: ReceiptVerificationPolicy = {
     embeddedRootBytes: tuf.root,

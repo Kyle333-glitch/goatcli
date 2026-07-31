@@ -66,6 +66,7 @@ export interface TestTufFixtureOptions {
   readonly artifactSha256?: string;
   readonly contents?: readonly SignedContentEntry[];
   readonly codeSigningIdentityId?: string;
+  readonly productVersion?: string;
 }
 
 const SPEC_VERSION = "1.0.31";
@@ -267,11 +268,12 @@ function targetCustom(
   options: TestTufFixtureOptions,
 ): GoatUpdateTargetCustom {
   const productVersion =
-    channel === "stable"
+    options.productVersion ??
+    (channel === "stable"
       ? "0.4.0"
       : channel === "beta"
         ? `0.4.0-beta.${releaseSequence}`
-        : `0.4.0-dev.${releaseSequence}`;
+        : `0.4.0-dev.${releaseSequence}`);
   const platform = options.platform ?? "win32";
   const architecture = options.architecture ?? "x64";
   const contents =
