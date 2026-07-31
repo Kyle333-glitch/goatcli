@@ -33,11 +33,11 @@ jobs:
           - os: windows-11-arm
             arch: arm64
             test_shard: "1/2"
-            test_excludes: "!src/update/locked-exe.native.test.ts"
+            test_excludes: "src/update/locked-exe.native.test.ts"
           - os: windows-11-arm
             arch: arm64
             test_shard: "2/2"
-            test_excludes: "!src/update/locked-exe.native.test.ts"
+            test_excludes: "src/update/locked-exe.native.test.ts"
           - os: macos-latest
             arch: arm64
             test_shard: "1/1"
@@ -127,9 +127,17 @@ jobs:
           TEST_EXCLUDES: ${{ matrix.test_excludes }}
         run: |
           set -o pipefail
-          test_args=("src/**/*.test.ts" "test/**/*.test.ts")
           if [[ -n "$TEST_EXCLUDES" ]]; then
-            test_args+=("$TEST_EXCLUDES")
+            test_args=()
+            while IFS= read -r test_file; do
+              test_args+=("$test_file")
+            done < <(find src test -type f -name '*.test.ts' ! -path "$TEST_EXCLUDES" -print | sort)
+          else
+            test_args=("src/**/*.test.ts" "test/**/*.test.ts")
+          fi
+          if (( ${#test_args[@]} == 0 )); then
+            echo "No test files selected" >&2
+            exit 1
           fi
           npm run test:ci -- --test-shard="${{ matrix.test_shard }}" "${test_args[@]}" --test-reporter=tap | tee test-output.log
         timeout-minutes: 20
