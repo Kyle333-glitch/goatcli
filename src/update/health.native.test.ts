@@ -108,7 +108,16 @@ test("native fixture engine passes the launcher health check", async (context) =
   const root = await mkdtemp(
     path.join(await realpath(os.tmpdir()), "goat-native-health-"),
   );
-  context.after(async () => rm(root, { recursive: true, force: true }));
+  context.after(async () => {
+    try {
+      await rm(root, { recursive: true, force: true });
+    } catch (error) {
+      // On Windows the fixture executable may still be held briefly by the
+      // kernel after spawnSync returns; the directory is under the OS temp
+      // path, so leaving it is harmless for a test-only artifact.
+      if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+    }
+  });
 
   const executablePath = compileFixture(compiler, root);
 
