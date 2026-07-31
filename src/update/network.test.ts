@@ -4,10 +4,12 @@ import { MockManifestServer } from "../../test/v0.4.0-update/mock-manifest-serve
 import { UpdateError } from "./errors.js";
 import { FixedOriginTransport, type NetworkLimits } from "./network.js";
 
+// Keep ordinary integration requests tolerant of loaded hosted runners. Tests
+// that exercise deadline behavior override these values explicitly below.
 const SMALL_LIMITS: NetworkLimits = {
-  headerTimeoutMs: 100,
-  idleTimeoutMs: 100,
-  totalTimeoutMs: 500,
+  headerTimeoutMs: 1_000,
+  idleTimeoutMs: 1_000,
+  totalTimeoutMs: 2_000,
   maxBytes: 1024,
 };
 

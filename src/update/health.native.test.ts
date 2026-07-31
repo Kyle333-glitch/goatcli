@@ -18,13 +18,17 @@ interface Compiler {
   readonly args: (output: string, source: string) => readonly string[];
 }
 
+// Prefer the compiler explicitly installed and verified by CI on Windows.
+// Some Windows ARM images expose a `cc` shim that can resolve to an
+// incompatible or emulated toolchain, while `gcc` is the reproducible MinGW
+// compiler used by the workflow.
 const COMPILERS: Compiler[] = [
   {
-    command: "cc",
+    command: "gcc",
     args: (output, source) => [source, "-o", output],
   },
   {
-    command: "gcc",
+    command: "cc",
     args: (output, source) => [source, "-o", output],
   },
   {
@@ -79,14 +83,21 @@ function compileFixture(compiler: Compiler, outputDirectory: string): string {
       shell: false,
       windowsHide: true,
       encoding: "utf8",
-      timeout: 30000,
+      // Windows ARM may run the x64 MinGW compiler under emulation; allow
+      // that test-only compilation enough time without weakening health's
+      // ten-second candidate execution bound.
+      timeout: 120000,
       killSignal: "SIGKILL",
     },
   );
-  if (result.status !== 0) {
-    throw new Error(
-      `fixture engine compilation failed: ${result.stderr ?? result.error?.message ?? compiler.command}`,
-    );
+  if (result.error || result.signal || result.status !== 0) {
+    const detail =
+      result.stderr?.trim() ||
+      result.error?.message ||
+      (result.signal
+        ? `terminated by ${result.signal}`
+        : `exit status ${result.status}`);
+    throw new Error(`fixture engine compilation failed: ${detail}`);
   }
   return outputPath;
 }
