@@ -17,6 +17,28 @@ export type ApprovedProviderPolicy = {
   readonly zdrApprovalId: string;
 };
 
+export type CompiledCodeSigningIdentity =
+  | {
+      readonly scheme: "authenticode-sha256";
+      readonly identityId: string;
+      readonly certificateSha256: string;
+    }
+  | {
+      readonly scheme: "apple-developer-id";
+      readonly identityId: string;
+      readonly teamIdentifier: string;
+      readonly authority: string;
+    };
+
+export interface CompiledUpdateReleasePolicy {
+  readonly enabled: boolean;
+  readonly metadataOrigin: string | null;
+  readonly artifactOrigin: string | null;
+  readonly embeddedTufRootSha256: string | null;
+  readonly engineManifestKeyIds: readonly string[];
+  readonly codeSigningIdentities: readonly CompiledCodeSigningIdentity[];
+}
+
 type ReleasePolicySnapshot = {
   readonly schemaVersion: number;
   readonly releaseVersion: string;
@@ -29,12 +51,23 @@ type ReleasePolicySnapshot = {
   readonly sponsorAllowedOrigins: readonly string[];
   readonly distribution: {
     readonly approvedOrigins: readonly string[];
+    readonly updateMetadataOrigin: string | null;
+    readonly updateArtifactOrigin: string | null;
+    readonly embeddedTufRootSha256: string | null;
     readonly allowUnsignedDevelopment: boolean;
     readonly engineManifestKeyIds: readonly string[];
+    readonly codeSigningIdentities: readonly CompiledCodeSigningIdentity[];
     readonly codeSigningCertificateFingerprints: readonly string[];
   };
   readonly compatibility: {
     readonly engineManifestVersion: 1;
+    readonly updateEngineManifestVersion: 2;
+    readonly launcherVersion: string;
+    readonly engineVersion: string;
+    readonly openCodeBaseline: string;
+    readonly engineLaunchContract: string;
+    readonly privacyActivationProtocol: string;
+    readonly authenticatedFrameProtocol: string;
   };
 };
 
@@ -73,6 +106,19 @@ export function engineManifestTrustPolicy(): EngineManifestTrustPolicy {
 
 export function releasePolicyAllows(feature: ReleasePolicyFeature): boolean {
   return policy.features[feature] === true;
+}
+
+export function compiledUpdateReleasePolicy(): CompiledUpdateReleasePolicy {
+  return {
+    enabled:
+      releasePolicyAllows("updates") &&
+      releasePolicyAllows("artifactDownloads"),
+    metadataOrigin: policy.distribution.updateMetadataOrigin,
+    artifactOrigin: policy.distribution.updateArtifactOrigin,
+    embeddedTufRootSha256: policy.distribution.embeddedTufRootSha256,
+    engineManifestKeyIds: [...policy.distribution.engineManifestKeyIds],
+    codeSigningIdentities: [...policy.distribution.codeSigningIdentities],
+  };
 }
 
 export function approvedEngineEnvironmentKeys(): readonly string[] {
@@ -123,9 +169,16 @@ export function assertLauncherReleasePolicy(input: {
 }): void {
   if (
     policy.schemaVersion !== 1 ||
-    policy.releaseVersion !== "0.3.2" ||
+    policy.releaseVersion !== "0.4.0" ||
     policy.policyRevision < 1 ||
     policy.compatibility.engineManifestVersion !== 1 ||
+    policy.compatibility.updateEngineManifestVersion !== 2 ||
+    policy.compatibility.launcherVersion !== "0.4.0" ||
+    policy.compatibility.engineVersion !== "0.4.0" ||
+    policy.compatibility.openCodeBaseline !== "1.17.11" ||
+    policy.compatibility.engineLaunchContract !== "0.0.6" ||
+    policy.compatibility.privacyActivationProtocol !== "GOATIPC2" ||
+    policy.compatibility.authenticatedFrameProtocol !== "GOATIPC1" ||
     !/^[a-f0-9]{64}$/.test(GOAT_RELEASE_POLICY_SOURCE_SHA256) ||
     policy.distribution.engineManifestKeyIds.some(
       (keyId) => !/^[a-f0-9]{64}$/.test(keyId),
@@ -142,7 +195,11 @@ export function assertLauncherReleasePolicy(input: {
       policy.controlPlaneOrigin === null ||
       policy.distribution.allowUnsignedDevelopment ||
       policy.distribution.engineManifestKeyIds.length === 0 ||
-      policy.distribution.codeSigningCertificateFingerprints.length === 0
+      policy.distribution.codeSigningCertificateFingerprints.length === 0 ||
+      policy.distribution.updateMetadataOrigin === null ||
+      policy.distribution.updateArtifactOrigin === null ||
+      policy.distribution.embeddedTufRootSha256 === null ||
+      policy.distribution.codeSigningIdentities.length === 0
     ) {
       throw new ReleasePolicyError("production_release_blocked");
     }
@@ -157,8 +214,12 @@ export function assertLauncherReleasePolicy(input: {
     policy.providers.length !== 0 ||
     policy.sponsorAllowedOrigins.length !== 0 ||
     policy.distribution.approvedOrigins.length !== 0 ||
+    policy.distribution.updateMetadataOrigin !== null ||
+    policy.distribution.updateArtifactOrigin !== null ||
+    policy.distribution.embeddedTufRootSha256 !== null ||
     policy.distribution.engineManifestKeyIds.length !== 0 ||
     policy.distribution.codeSigningCertificateFingerprints.length !== 0 ||
+    policy.distribution.codeSigningIdentities.length !== 0 ||
     !policy.distribution.allowUnsignedDevelopment
   ) {
     throw new ReleasePolicyError("release_policy_invalid");

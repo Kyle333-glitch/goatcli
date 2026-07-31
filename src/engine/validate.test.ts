@@ -16,6 +16,7 @@ import {
 import { engineManifestTrustPolicy } from "../privacy/release-policy.js";
 import {
   canonicalEngineManifestPayload,
+  parseManifest,
   validateEngine,
   type EngineFileSystem,
 } from "./validate.js";
@@ -611,6 +612,38 @@ test("validateEngine accepts an unsigned development manifest with the exact sha
 
   assert.equal(result.manifest?.signature.status, "unsigned-development");
   assert.equal(result.checksum, sha256(engineBytes));
+});
+
+test("parseManifest rejects duplicate JSON object keys", () => {
+  const baseManifest = makeManifest(
+    "win32",
+    "x64",
+    "bin/goat-engine.exe",
+    sha256("engine"),
+  );
+  const manifestJson = JSON.stringify(baseManifest);
+  const tamperedJson = manifestJson.replace(
+    /"engineVersion":"[^"]*"/,
+    (match) => `${match},"engineVersion":"9.9.9"`,
+  );
+  assert.throws(
+    () => parseManifest(tamperedJson),
+    (error) =>
+      error instanceof EngineContractError &&
+      error.code === "GOAT_ENGINE_MANIFEST_INVALID",
+  );
+});
+
+test("parseManifest accepts a valid manifest without duplicate keys", () => {
+  const baseManifest = makeManifest(
+    "win32",
+    "x64",
+    "bin/goat-engine.exe",
+    sha256("engine"),
+  );
+  const result = parseManifest(JSON.stringify(baseManifest));
+  assert.equal(result.engineVersion, baseManifest.engineVersion);
+  assert.equal(result.platform, "win32");
 });
 
 test("validateEngine rejects relative development override paths", () => {

@@ -9,7 +9,7 @@ const pkg = JSON.parse(
 const failures = [];
 
 if (pkg.name !== "goatcli") failures.push("package name must be goatcli");
-if (pkg.version !== "0.3.2") failures.push("package version must be 0.3.2");
+if (pkg.version !== "0.4.0") failures.push("package version must be 0.4.0");
 if (pkg.private === true)
   failures.push("public launcher package must not be private");
 if (pkg.license !== "MIT") failures.push("public launcher license must be MIT");
@@ -84,6 +84,136 @@ if (packed.status !== 0) {
     ) {
       failures.push("packed payload contains tests or a private engine binary");
     }
+
+    scanPackedFiles(result.files, failures);
+  }
+}
+
+function scanPackedFiles(fileEntries, failures) {
+  const secretPatterns = [
+    /BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY/i,
+    /BEGIN\s+EC\s+PRIVATE\s+KEY/i,
+    /BEGIN\s+DSA\s+PRIVATE\s+KEY/i,
+    /BEGIN\s+OPENSSH\s+PRIVATE\s+KEY/i,
+    /BEGIN\s+PGP\s+PRIVATE\s+KEY/i,
+    /BEGIN\s+ENCRYPTED\s+PRIVATE\s+KEY/i,
+    /BEGIN\s+CERTIFICATE/i,
+    /\bapi[_-]?key\s*[:=]\s*["']?[A-Za-z0-9_\-/+=]{8,}["']?/i,
+    /\bapi[_-]?secret\s*[:=]\s*["']?[A-Za-z0-9_\-/+=]{8,}["']?/i,
+    /\bpassword\s*[:=]\s*["'][^"']{8,}["']/i,
+    /\btoken\s*[:=]\s*["'][A-Za-z0-9_\-/+=]{16,}["']/i,
+    /AKIA[0-9A-Z]{16}/,
+    /gh[opsr]_[a-zA-Z0-9]{36}/,
+  ];
+  const blockedExtensions = new Set([
+    ".pem",
+    ".key",
+    ".crt",
+    ".cer",
+    ".der",
+    ".p12",
+    ".pfx",
+    ".node",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".macho",
+    ".zip",
+    ".bin",
+  ]);
+  const textExtensions = new Set([
+    ".js",
+    ".ts",
+    ".json",
+    ".md",
+    ".yml",
+    ".yaml",
+    ".txt",
+    ".html",
+    ".css",
+    ".svg",
+    ".xml",
+    ".csv",
+  ]);
+  for (const { path: filePath } of fileEntries) {
+    const normalized = filePath.replaceAll("\\", "/");
+    const resolved = resolvePackedPath(normalized);
+    if (!resolved) {
+      failures.push(
+        `packed path ${normalized} resolves outside the package root or is not a regular file`,
+      );
+      continue;
+    }
+    const lower = normalized.toLowerCase();
+    const basename = lower.split("/").pop() ?? "";
+    const ext = basename.includes(".")
+      ? basename.slice(basename.lastIndexOf("."))
+      : "";
+    if (blockedExtensions.has(ext)) {
+      failures.push(
+        `packed payload contains unexpected key/certificate/binary extension: ${normalized}`,
+      );
+    }
+    if (textExtensions.has(ext)) {
+      try {
+        const raw = fs.readFileSync(resolved);
+        if (containsBinaryPayload(raw)) {
+          failures.push(
+            `packed file ${normalized} appears to contain non-text (native/binary) bytes`,
+          );
+          continue;
+        }
+        const contents = raw.toString("utf8");
+        for (const pattern of secretPatterns) {
+          if (pattern.test(contents)) {
+            failures.push(
+              `packed file ${normalized} may contain secret material matching ${pattern.source}`,
+            );
+            break;
+          }
+        }
+      } catch {
+        failures.push(
+          `could not read packed file ${normalized} for secret scan`,
+        );
+      }
+    }
+  }
+}
+
+function resolvePackedPath(normalized) {
+  const fullPath = path.join(root, normalized);
+  const resolved = path.resolve(fullPath);
+  const rootResolved = path.resolve(root);
+  const boundary = rootResolved.endsWith(path.sep)
+    ? rootResolved
+    : `${rootResolved}${path.sep}`;
+  if (!resolved.startsWith(boundary) || resolved === rootResolved) {
+    return null;
+  }
+  let stats;
+  try {
+    stats = fs.lstatSync(resolved);
+  } catch {
+    return null;
+  }
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    return null;
+  }
+  return resolved;
+}
+
+function containsBinaryPayload(raw) {
+  // Null bytes are a strong indicator of a native/binary file.
+  if (raw.includes(0)) return true;
+  // Valid UTF-8 text (including multi-byte characters) should not be flagged
+  // as binary. Reject any content that cannot be decoded as valid UTF-8.
+  try {
+    new TextDecoder("utf8", { fatal: true }).decode(raw);
+    return false;
+  } catch {
+    return true;
   }
 }
 
@@ -94,4 +224,7 @@ if (failures.length) {
   process.exitCode = 1;
 } else {
   console.log("Package verification passed.");
+  console.log(
+    "Note: secret-marker scan is a best-effort preventative check, not a proof of complete secret absence.",
+  );
 }
