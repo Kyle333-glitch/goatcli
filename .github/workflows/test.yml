@@ -198,6 +198,7 @@ jobs:
         timeout-minutes: 5
 
       - name: Verify actual package artifact
+        id: package_verification
         if: ${{ matrix.test_shard == '1/1' || matrix.test_shard == '1/2' }}
         shell: bash
         run: |
@@ -205,12 +206,12 @@ jobs:
         timeout-minutes: 10
 
       - name: Upload package artifact-inspection report
-        if: ${{ always() && (matrix.test_shard == '1/1' || matrix.test_shard == '1/2') }}
+        if: ${{ !cancelled() && steps.package_verification.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: goatcli-package-verification-${{ runner.os }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/goatcli-package-verification.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Verify clean checkout after build and tests

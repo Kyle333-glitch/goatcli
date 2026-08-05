@@ -65,7 +65,10 @@ for (const signal of nativeTerminationSignals) {
     `native containment removes descendants for real ${signal}`,
     { timeout: 60_000 },
     async (context) => {
-      if (!supportedPlatform(context)) return;
+      if (!supportedPlatform()) {
+        context.skip("native containment runs only on Windows and macOS");
+        return;
+      }
       const consoleSignal: "CTRL_C" | "CTRL_BREAK" | undefined =
         process.platform === "win32" &&
         (signal === "SIGINT" || signal === "SIGBREAK")
@@ -89,7 +92,10 @@ test(
   "native containment closes descendants after launcher exit and engine crash",
   { timeout: 90_000 },
   async (context) => {
-    if (!supportedPlatform(context)) return;
+    if (!supportedPlatform()) {
+      context.skip("native containment runs only on Windows and macOS");
+      return;
+    }
 
     const launcherExit = await startTree("normal");
     try {
@@ -148,7 +154,10 @@ test(
   "native spawn and IPC failures fail closed without touching the sentinel",
   { timeout: 90_000 },
   async (context) => {
-    if (!supportedPlatform(context)) return;
+    if (!supportedPlatform()) {
+      context.skip("native containment runs only on Windows and macOS");
+      return;
+    }
 
     const spawnFailure = await startTree("spawn-failure", false);
     try {
@@ -574,14 +583,8 @@ function fixtureEnvironment(): NodeJS.ProcessEnv {
   return result;
 }
 
-function supportedPlatform(context: {
-  skip(message?: string): void;
-}): "win32" | "darwin" | undefined {
-  if (process.platform !== "win32" && process.platform !== "darwin") {
-    context.skip("native containment runs only on Windows and macOS");
-    return undefined;
-  }
-  return process.platform;
+function supportedPlatform(): boolean {
+  return process.platform === "win32" || process.platform === "darwin";
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {

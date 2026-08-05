@@ -167,7 +167,7 @@ function packActualArtifact(npmCli, temporaryRoot, attempt) {
   const archivePaths = listArchivePaths(archivePath);
   const expectedArchivePaths = metadataPaths
     .map((filePath) => "package/" + filePath)
-    .sort();
+    .sort(compareStrings);
   assertSamePaths(
     archivePaths,
     expectedArchivePaths,
@@ -260,7 +260,7 @@ function validatePackedMetadata(fileEntries) {
   ) {
     throw artifactError("packed payload contains tests or a private engine");
   }
-  return paths.sort();
+  return paths.sort(compareStrings);
 }
 
 function listArchivePaths(archivePath) {
@@ -284,7 +284,7 @@ function listArchivePaths(archivePath) {
       }
       return entry;
     })
-    .sort();
+    .sort(compareStrings);
 }
 
 function assertRegularArchiveHeaders(archivePath, expectedCount) {
@@ -336,7 +336,7 @@ function walkRegularFiles(packageRoot) {
     }
   };
   visit(packageRoot, "");
-  return files.sort();
+  return files.sort(compareStrings);
 }
 
 function validatePackedPackageJson(packageRoot) {
@@ -356,10 +356,12 @@ function validatePackedPackageJson(packageRoot) {
       "packed package metadata differs from the release input",
     );
   }
-  const expectedDependencies = Object.keys(pkg.dependencies ?? {}).sort();
-  const packedDependencies = Object.keys(
-    packedPackage.dependencies ?? {},
-  ).sort();
+  const expectedDependencies = Object.keys(pkg.dependencies ?? {}).sort(
+    compareStrings,
+  );
+  const packedDependencies = Object.keys(packedPackage.dependencies ?? {}).sort(
+    compareStrings,
+  );
   assertSamePaths(
     packedDependencies,
     expectedDependencies,
@@ -383,8 +385,12 @@ function inspectProductionDependencyGraph(npmCli) {
       "production dependency graph",
     );
     const graph = JSON.parse(output);
-    const expectedTopLevel = Object.keys(pkg.dependencies ?? {}).sort();
-    const actualTopLevel = Object.keys(graph.dependencies ?? {}).sort();
+    const expectedTopLevel = Object.keys(pkg.dependencies ?? {}).sort(
+      compareStrings,
+    );
+    const actualTopLevel = Object.keys(graph.dependencies ?? {}).sort(
+      compareStrings,
+    );
     assertSamePaths(
       actualTopLevel,
       expectedTopLevel,
@@ -512,6 +518,10 @@ function artifactError(message) {
   const error = new Error(message);
   error.name = "ArtifactVerificationError";
   return error;
+}
+
+function compareStrings(left, right) {
+  return left.localeCompare(right);
 }
 
 function safeErrorMessage(error) {

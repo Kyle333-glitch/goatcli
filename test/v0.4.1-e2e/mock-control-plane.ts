@@ -113,134 +113,155 @@ export class MockControlPlaneServer {
         });
         return;
       }
-      if (
-        request.method === "POST" &&
-        url.pathname === "/v1/auth/device/sessions"
-      ) {
-        if (requestBody.byteLength !== 0) {
-          writeJson(response, 400, {
-            error: {
-              code: "invalid_request",
-              message: "Device session requests must not include a body",
-            },
-          });
-          return;
-        }
-        writeJson(response, 201, {
-          verificationUrl: `${origin}/auth/device`,
-          userCode: USER_CODE,
-          deviceCode: DEVICE_CODE,
-          intervalSeconds: 1,
-          expiresAt: EXPIRES_AT,
-          expiresInSeconds: 600,
-        });
-        return;
-      }
-
-      if (
-        request.method === "POST" &&
-        url.pathname === "/v1/auth/device/token"
-      ) {
-        if (
-          !requestBodyMatches(requestBody, `{"deviceCode":"${DEVICE_CODE}"}`)
-        ) {
-          writeJson(response, 400, {
-            error: {
-              code: "invalid_device_code",
-              message: "Invalid device code",
-            },
-          });
-          return;
-        }
-        this.validDeviceTokenRequests += 1;
-        writeJson(response, 200, {
-          accessToken: ACCESS_TOKEN,
-          refreshToken: REFRESH_TOKEN,
-          tokenType: "Bearer",
-          accessTokenExpiresAt: EXPIRES_AT,
-          refreshTokenExpiresAt: EXPIRES_AT,
-        });
-        return;
-      }
-
-      if (
-        request.method === "POST" &&
-        url.pathname === "/v1/auth/tokens/refresh"
-      ) {
-        if (
-          !requestBodyMatches(
-            requestBody,
-            `{"refreshToken":"${REFRESH_TOKEN}"}`,
-          )
-        ) {
-          writeJson(response, 401, {
-            error: {
-              code: "invalid_refresh_token",
-              message: "Invalid refresh token",
-            },
-          });
-          return;
-        }
-        this.validRefreshRequests += 1;
-        writeJson(response, 200, {
-          accessToken: ACCESS_TOKEN,
-          refreshToken: ROTATED_REFRESH_TOKEN,
-          tokenType: "Bearer",
-          accessTokenExpiresAt: EXPIRES_AT,
-          refreshTokenExpiresAt: EXPIRES_AT,
-        });
-        return;
-      }
-
-      if (
-        request.method === "POST" &&
-        url.pathname === "/v1/inference/stream"
-      ) {
-        if (request.headers.authorization !== `Bearer ${ACCESS_TOKEN}`) {
-          writeJson(response, 401, {
-            error: {
-              code: "unauthorized",
-              message: "Invalid access token",
-            },
-          });
-          return;
-        }
-        if (!requestBodyMatches(requestBody, "{}")) {
-          writeJson(response, 400, {
-            error: {
-              code: "invalid_request",
-              message: "Invalid inference request",
-            },
-          });
-          return;
-        }
-        this.validInferenceRequests += 1;
-        this.validInferenceBodies += 1;
-        writeJson(response, 403, {
-          error: {
-            code: "quota_exceeded",
-            message: "Quota allowance exceeded",
-          },
-        });
-        return;
-      }
-
-      if (request.method === "GET" && url.pathname === "/v1/usage/summary") {
-        writeJson(response, 403, {
-          error: {
-            code: "quota_exceeded",
-            message: "Quota allowance exceeded",
-          },
-        });
-        return;
-      }
-
-      writeJson(response, 404, {
-        error: { code: "not_found", message: "Not found" },
-      });
+      await this.handleValidRequest(
+        request,
+        response,
+        url,
+        requestBody,
+        origin,
+      );
     } finally {
       requestBody.fill(0);
     }
+  }
+
+  private async handleValidRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    body: Buffer,
+    origin: string,
+  ): Promise<void> {
+    if (await this.handleDeviceSession(request, response, url, body, origin))
+      return;
+    if (await this.handleDeviceToken(request, response, url, body)) return;
+    if (await this.handleRefresh(request, response, url, body)) return;
+    if (await this.handleInference(request, response, url, body)) return;
+    if (request.method === "GET" && url.pathname === "/v1/usage/summary") {
+      writeJson(response, 403, {
+        error: { code: "quota_exceeded", message: "Quota allowance exceeded" },
+      });
+      return;
+    }
+    writeJson(response, 404, {
+      error: { code: "not_found", message: "Not found" },
+    });
+  }
+
+  private async handleDeviceSession(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    body: Buffer,
+    origin: string,
+  ): Promise<boolean> {
+    if (
+      request.method !== "POST" ||
+      url.pathname !== "/v1/auth/device/sessions"
+    )
+      return false;
+    if (body.byteLength !== 0) {
+      writeJson(response, 400, {
+        error: {
+          code: "invalid_request",
+          message: "Device session requests must not include a body",
+        },
+      });
+      return true;
+    }
+    writeJson(response, 201, {
+      verificationUrl: `${origin}/auth/device`,
+      userCode: USER_CODE,
+      deviceCode: DEVICE_CODE,
+      intervalSeconds: 1,
+      expiresAt: EXPIRES_AT,
+      expiresInSeconds: 600,
+    });
+    return true;
+  }
+
+  private async handleDeviceToken(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    body: Buffer,
+  ): Promise<boolean> {
+    if (request.method !== "POST" || url.pathname !== "/v1/auth/device/token")
+      return false;
+    if (!requestBodyMatches(body, `{"deviceCode":"${DEVICE_CODE}"}`)) {
+      writeJson(response, 400, {
+        error: { code: "invalid_device_code", message: "Invalid device code" },
+      });
+      return true;
+    }
+    this.validDeviceTokenRequests += 1;
+    writeJson(response, 200, {
+      accessToken: ACCESS_TOKEN,
+      refreshToken: REFRESH_TOKEN,
+      tokenType: "Bearer",
+      accessTokenExpiresAt: EXPIRES_AT,
+      refreshTokenExpiresAt: EXPIRES_AT,
+    });
+    return true;
+  }
+
+  private async handleRefresh(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    body: Buffer,
+  ): Promise<boolean> {
+    if (request.method !== "POST" || url.pathname !== "/v1/auth/tokens/refresh")
+      return false;
+    if (!requestBodyMatches(body, `{"refreshToken":"${REFRESH_TOKEN}"}`)) {
+      writeJson(response, 401, {
+        error: {
+          code: "invalid_refresh_token",
+          message: "Invalid refresh token",
+        },
+      });
+      return true;
+    }
+    this.validRefreshRequests += 1;
+    writeJson(response, 200, {
+      accessToken: ACCESS_TOKEN,
+      refreshToken: ROTATED_REFRESH_TOKEN,
+      tokenType: "Bearer",
+      accessTokenExpiresAt: EXPIRES_AT,
+      refreshTokenExpiresAt: EXPIRES_AT,
+    });
+    return true;
+  }
+
+  private async handleInference(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    body: Buffer,
+  ): Promise<boolean> {
+    if (request.method !== "POST" || url.pathname !== "/v1/inference/stream")
+      return false;
+    if (request.headers.authorization !== `Bearer ${ACCESS_TOKEN}`) {
+      writeJson(response, 401, {
+        error: { code: "unauthorized", message: "Invalid access token" },
+      });
+      return true;
+    }
+    if (!requestBodyMatches(body, "{}")) {
+      writeJson(response, 400, {
+        error: {
+          code: "invalid_request",
+          message: "Invalid inference request",
+        },
+      });
+      return true;
+    }
+    this.validInferenceRequests += 1;
+    this.validInferenceBodies += 1;
+    writeJson(response, 403, {
+      error: { code: "quota_exceeded", message: "Quota allowance exceeded" },
+    });
+    return true;
   }
 }
 
