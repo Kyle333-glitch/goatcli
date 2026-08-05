@@ -32,7 +32,7 @@ provider, Gatekeeper, or SmartScreen.
   inference settlement behavior.
 
 The engine and control-plane suites are intentionally separate mocked layers.
-They share fixture-only contracts but are not presented as a single production-service deployment. The  launcher fixture’s auth counters are request-boundary
+They share fixture-only contracts but are not presented as a single production-service deployment. The launcher fixture’s auth counters are request-boundary
 assertions using fixture tokens, not full control-plane authorization semantics;
 it also does not claim to exercise the full inference-client mapping. Direct
 launcher-child shutdown and native descendant-process/no-orphan inspection are
