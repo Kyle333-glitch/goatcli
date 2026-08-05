@@ -1,6 +1,6 @@
 {
   "name": "goatcli",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Privacy-bounded public launcher for GOAT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -23,8 +23,12 @@
     "lint": "npm run privacy:check",
     "test:privacy": "npm run build && node --import tsx --test \"src/auth/*.test.ts\" \"src/commands/*.test.ts\" \"src/engine/privacy-*.test.ts\" \"src/privacy/*.test.ts\"",
     "test:cross-repo": "node ./scripts/test-cross-repo.mjs",
+    "test:cross-repo-v041": "node ./scripts/test-v041-cross-repo.mjs",
+    "test:platform-e2e": "npm run build && node --import tsx --test test/v0.4.1-e2e/launcher.test.ts test/v0.4.1-e2e/process-containment.native.test.ts",
+    "test:platform-integrity": "npm run build && node --import tsx --test src/engine/validate.test.ts src/update/archive.test.ts src/update/code-signing.test.ts src/update/recovery.test.ts src/update/rollback.test.ts",
     "privacy:check": "node ./scripts/check-privacy-architecture.mjs",
-    "test": "npm run build && node --import tsx --test \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
+    "test:ci": "npm run build && node --import tsx --test",
+    "test": "npm run test:ci -- \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
     "verify:package": "npm run build && npm run privacy:check && node ./scripts/verify-package.mjs",
     "prepublishOnly": "npm run format:check && npm run typecheck && npm test && npm run verify:package"
   },
@@ -45,10 +49,16 @@
   "dependencies": {
     "@clack/prompts": "^0.9.1",
     "@napi-rs/keyring": "1.3.0",
-    "execa": "^9.3.0"
+    "@tufjs/canonical-json": "2.0.0",
+    "@tufjs/models": "5.0.0",
+    "execa": "^9.3.0",
+    "semver": "7.8.5",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "@types/semver": "7.7.1",
+    "@types/yauzl": "3.4.0",
     "prettier": "^3.9.5",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4"

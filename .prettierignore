@@ -1,0 +1,3 @@
+# These snapshots are byte-for-byte outputs of goat-release-policy.
+src/privacy/release-policy.generated.ts
+src/privacy/release-policy-signature.generated.ts

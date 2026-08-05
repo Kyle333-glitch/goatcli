@@ -1,6 +1,6 @@
 # goatcli privacy behavior
 
-This document describes the public `goatcli` launcher as implemented in v0.3.2. It does not describe every engine or control-plane behavior. The launcher has no independent analytics, telemetry, lifecycle-event, consent-reporting, exception-upload, or diagnostic-upload client.
+This document describes the public `goatcli` launcher as implemented in v0.4.0. It does not describe every engine or control-plane behavior. The launcher has no independent analytics, telemetry, lifecycle-event, consent-reporting, exception-upload, or diagnostic-upload client.
 
 ## Data that the launcher never transmits
 
@@ -10,9 +10,16 @@ Turning engine telemetry off does not activate any launcher network behavior. La
 
 ## Essential launcher network operations
 
-There is one purpose-bound auth/usage client. Its origin is compiled into the launcher, routes are fixed, requests have a five-second total deadline, responses are limited to 16 KiB, and redirects and cookies are rejected. Requests use no proxy discovery, query string, fragment, URL user information, cookie jar, redirect following, or arbitrary header bag.
+The launcher owns two purpose-bound network clients:
 
-v0.3.2 has no compiled production origin and therefore fails closed. `GOAT_CONTROL_PLANE_URL` and other environment variables cannot select a destination. Tests may inject an HTTP or HTTPS loopback origin explicitly; non-loopback development injection is rejected.
+1. **Auth/usage client** — communicates with a fixed compiled control-plane origin.
+2. **Verified-update transport** — fetches TUF metadata and engine artifacts from fixed compiled origins.
+
+### Auth/usage client
+
+The auth/usage client's origin is compiled into the launcher, routes are fixed, requests have a five-second total deadline, responses are limited to 16 KiB, and redirects and cookies are rejected. Requests use no proxy discovery, query string, fragment, URL user information, cookie jar, redirect following, or arbitrary header bag.
+
+v0.4.0 has no compiled production origin and therefore fails closed. `GOAT_CONTROL_PLANE_URL` and other environment variables cannot select a destination. Tests may inject an HTTP or HTTPS loopback origin explicitly; non-loopback development injection is rejected.
 
 | Purpose               | Method and route                | Application fields sent               | Fixed headers                                          |
 | --------------------- | ------------------------------- | ------------------------------------- | ------------------------------------------------------ |
@@ -25,9 +32,42 @@ v0.3.2 has no compiled production origin and therefore fails closed. `GOAT_CONTR
 
 The HTTP transport supplies `Host: <approved-host[:port]>`, `Connection: close`, and the applicable `Content-Length` (including zero for the bodyless session-creation POST). These are operational HTTP framing fields, not application metadata. No other application metadata is added. Device codes, access tokens, and refresh tokens must be exactly 43 base64url characters before transmission.
 
-The client strictly reconstructs the PII-free `v0.3.2` usage response and rejects unknown top-level and nested fields, including `displayName`, `email`, `requestId`, generic metadata bags, and arbitrary objects in arrays. Human and JSON usage output contain no name, email, or request identifier. Server, DNS, TLS, timeout, parsing, and transport failures become fixed path-free launcher errors. Response bodies, exception messages, and stacks are neither printed automatically nor uploaded.
+The client strictly reconstructs the PII-free usage response and rejects unknown top-level and nested fields, including `displayName`, `email`, `requestId`, generic metadata bags, and arbitrary objects in arrays. Human and JSON usage output contain no name, email, or request identifier. Server, DNS, TLS, timeout, parsing, and transport failures become fixed path-free launcher errors. Response bodies, exception messages, and stacks are neither printed automatically nor uploaded.
 
 Browser authentication opens only `<approved-origin>/auth/device`. The launcher never appends a user code, device code, query, fragment, or server-returned arbitrary URL.
+
+### Verified-update transport
+
+`goat update` uses a fixed-origin HTTPS transport to fetch TUF metadata and engine artifacts. The transport's origins are compiled into the launcher and cannot be overridden by environment variables or command-line arguments.
+
+The verified-update transport:
+
+- Rejects all HTTP redirects (3xx responses).
+- Rejects non-HTTPS origins, query strings, URL fragments, URL credentials, and origin-crossing resource paths.
+- Sends only fixed HTTP framing headers: `Accept`, `Accept-Encoding: identity`, `User-Agent: GOAT-update/<version>`, `X-GOAT-Channel`, `X-GOAT-Platform`, `X-GOAT-Architecture`, and `Connection: close`.
+- Enforces header, idle, and total timeout deadlines.
+- Enforces maximum byte limits for metadata (256 KiB) and artifacts (512 MiB) including both `Content-Length` and streamed-byte guards.
+- Retries only retryable transient HTTP failures (5xx, 408, 429, ECONNRESET, ETIMEDOUT, etc.) at most once with randomized backoff for idempotent GET requests. Non-retryable errors and non-GET methods are never retried.
+- Includes no cookies, no proxy discovery, no query string, no fragment, and no arbitrary header bag.
+
+The `User-Agent`, channel, platform, and architecture headers are operational routing identifiers necessary for the update server to select the correct release. They do not include user-identifying information.
+
+Update metadata and artifacts are accessed only through this fixed-origin transport. No other network path can fetch, download, or inspect update material.
+
+### What the verified-update channel does not transmit
+
+The verified-update transport never transmits:
+
+- CLI arguments beyond the fixed channel/platform/architecture routing identifiers
+- Working directories or file paths
+- Usernames or environment variables
+- Repository or Git information
+- Child-process output
+- Exception messages or stack traces
+- Credential material (access tokens, refresh tokens, device codes)
+- Diagnostic content
+
+Update success, failure, and integrity-check results produce no launcher telemetry request. The launcher reports update status only to the local terminal via fixed messages. No update event, lifecycle event, or error report is uploaded.
 
 ## Credentials
 
@@ -39,13 +79,15 @@ If a newly issued or rotated credential cannot be verified in the keyring, the l
 
 ## Local package and engine operations
 
-Binary discovery, package inspection, engine manifest parsing, compatibility checking, and SHA-256 verification are local essential package operations. v0.3.2 implements no launcher download request, update check, update download, manifest download, or integrity-reporting request.
+Binary discovery, package inspection, engine manifest parsing, compatibility checking, SHA-256 verification, archive extraction, code-signing verification, health checking, activation, rollback verification, and update state management are all local essential operations. No engine file content, manifest content, or update state is transmitted to a network endpoint by the launcher outside the verified-update metadata and artifact fetches described above.
 
 ## Launcher self-update
 
-The v0.3.2 launcher does not implement a self-update command. `goat upgrade` is treated as an ordinary engine command and is forwarded to the verified local engine, along with the working directory, inherited environment, and terminal streams. The launcher strips only its fixed routing keys (`GOAT_CONTROL_PLANE_URL`, `GOAT_ENGINE_PATH`, `GOAT_DEV_ENGINE_PATH`, and `GOATCLI_DEV`). It does not buffer child output or include any child input in a launcher request.
+The v0.4.0 launcher owns verified engine updates through `goat update` as described in [README.md](./README.md). The launcher does not self-update (update itself); `goat update` updates the GOAT engine, not the `goatcli` npm package. The npm package is updated through the standard npm installation flow (`npm install --global goatcli`).
 
-v0.3.2 has no compiled production origin and therefore fails closed; launcher-owned browser login, token refresh, revocation, and usage requests are unavailable in a production build until an approved origin is compiled into a later build. An environment variable cannot select a production destination.
+`goat upgrade` and other unrecognized commands are forwarded to the verified local engine, along with the working directory, inherited environment, and terminal streams. The launcher strips only its fixed routing keys (`GOAT_CONTROL_PLANE_URL`, `GOAT_ENGINE_PATH`, `GOAT_DEV_ENGINE_PATH`, and `GOATCLI_DEV`). It does not buffer child output or include any child input in a launcher request.
+
+v0.4.0 has no compiled production origin and therefore fails closed; launcher-owned browser login, token refresh, revocation, usage requests, and verified updates are unavailable in a production build until approved production trust material is compiled into a later build. An environment variable cannot select a destination or override the trust configuration.
 
 `goat doctor` is local-only. It may display local paths and diagnostic details to the user in the current terminal, but the launcher does not send doctor results or failures to a network request, IPC diagnostic field, or error reporter.
 
@@ -68,10 +110,10 @@ The launcher creates a version 1 authenticated anonymous-pipe session only for:
 
 Descriptors 3 and 4 carry the `GOATIPC1` protocol with a random 32-byte in-memory secret, HMAC-SHA-256 authentication, canonical JSON, a 2 KiB header limit, 4 KiB frame limit, two-second deadline, nonce/sequence/process binding, and exact acknowledgements. Node 24.16.0 is required so Windows uses libuv's explicit inherited-handle allowlist; unrelated descriptors remain closed on macOS.
 
-The initial frame contains only protocol version, message type, random session and nonce identifiers, sequence, timestamp, launcher and engine process IDs, launcher version `0.3.2`, installation channel `npm`, engine integrity (`verified` or `development_unverified`), keyring status, credential length, and optional credential expiry. It carries the exact 43-byte access token only when authentication is required. Diagnostic preview uses no credential. The launcher omits OS session identifiers and launcher diagnostic checks.
+The initial frame contains only protocol version, message type, random session and nonce identifiers, sequence, timestamp, launcher and engine process IDs, launcher version, installation channel `npm`, engine integrity (`verified` or `development_unverified`), keyring status, credential length, and optional credential expiry. It carries the exact 43-byte access token only when authentication is required. Diagnostic preview uses no credential. The launcher omits OS session identifiers and launcher diagnostic checks.
 
 Arguments and diagnostic identifiers remain opaque engine arguments and never enter launcher network requests or IPC metadata. The launcher does not read diagnostic preview bytes. Diagnostic creation, preview, submission, deletion, and any associated user confirmation remain engine-owned. If a compatible engine does not continue listening after the initial acknowledgement, the launcher closes the descriptors after engine exit and does not compensate with another channel.
 
 ## Error reporting
 
-The launcher has no Sentry, analytics, generic event, or error-reporting integration. Local launch/auth failures are mapped to fixed codes or messages. Raw spawn errors, network errors, server bodies, exception messages, and stack traces are not uploaded and are not included in essential requests.
+The launcher has no Sentry, analytics, generic event, or error-reporting integration. Local launch/auth/update failures are mapped to fixed codes or messages. Raw spawn errors, network errors, server bodies, exception messages, and stack traces are not uploaded and are not included in essential requests.

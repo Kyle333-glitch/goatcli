@@ -28,7 +28,13 @@ const processEnvAllowlist = new Set([
   "src/auth/browser.ts",
   "src/auth/client.ts",
   "src/platform.ts",
+  "src/update/code-signing.ts",
+  "src/update/health.ts",
   "src/utils/system.ts",
+]);
+const networkModuleAllowlist = new Map([
+  ["src/auth/client.ts", httpNetworkModules],
+  ["src/update/network.ts", httpNetworkModules],
 ]);
 
 for (const filename of productionFiles) {
@@ -48,18 +54,19 @@ for (const filename of productionFiles) {
       ts.isStringLiteral(node.moduleSpecifier)
     ) {
       const moduleName = node.moduleSpecifier.text;
-      if (networkModules.has(moduleName) && relative !== "src/auth/client.ts") {
+      const approvedNetworkModules = networkModuleAllowlist.get(relative);
+      if (networkModules.has(moduleName) && !approvedNetworkModules) {
         failures.push(
-          `${relative}: only src/auth/client.ts may import network primitives (${moduleName})`,
+          `${relative}: network primitives are confined to the approved auth and updater transports (${moduleName})`,
         );
       }
       if (
         networkModules.has(moduleName) &&
-        relative === "src/auth/client.ts" &&
-        !httpNetworkModules.has(moduleName)
+        approvedNetworkModules &&
+        !approvedNetworkModules.has(moduleName)
       ) {
         failures.push(
-          `${relative}: auth client may only import node:http and node:https (found ${moduleName})`,
+          `${relative}: approved transports may only import node:http and node:https (found ${moduleName})`,
         );
       }
       if (bannedModulePattern.test(moduleName)) {
@@ -114,7 +121,8 @@ for (const filename of productionFiles) {
     }
     if (
       (ts.isIdentifier(node) || ts.isStringLiteral(node)) &&
-      node.text === "metadata"
+      node.text === "metadata" &&
+      !relative.startsWith("src/update/")
     ) {
       failures.push(`${relative}: generic metadata bags are forbidden`);
     }
@@ -167,10 +175,40 @@ if (!/['"]?controlPlaneOrigin['"]?\s*:\s*null\s*,/.test(releasePolicy)) {
     "the internal launcher policy must ship without a production origin",
   );
 }
+for (const field of ["updateMetadataOrigin", "updateArtifactOrigin"]) {
+  if (!new RegExp(`['"]?${field}['"]?\\s*:\\s*null\\s*,`).test(releasePolicy)) {
+    failures.push(`the internal launcher policy must ship without ${field}`);
+  }
+}
 if (client.includes("APPROVED_PRODUCTION_ORIGIN"))
   failures.push(
     "src/auth/client.ts: duplicated production origin is forbidden",
   );
+
+const updaterNetwork = read("src/update/network.ts");
+for (const field of [
+  "GOAT_UPDATE_REDIRECT_REJECTED",
+  'origin.protocol !== "https:"',
+  "result.origin !== origin.origin",
+  '"Accept-Encoding": "identity"',
+]) {
+  requireText(
+    updaterNetwork,
+    field,
+    `missing fixed verified-update network boundary ${field}`,
+  );
+}
+const trustedRoot = read("src/update/trusted-root.generated.ts");
+requireText(
+  trustedRoot,
+  "GOAT_TUF_ROOT_BASE64: string | null = null",
+  "production updater trust root must remain absent until generated from approved public material",
+);
+requireText(
+  trustedRoot,
+  "GOAT_TUF_ROOT_SHA256: string | null = null",
+  "production updater trust-root digest must remain absent until generated from approved public material",
+);
 const approvedRoutePaths = [
   "/v1/auth/device/sessions",
   "/v1/auth/device/token",

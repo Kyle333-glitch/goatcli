@@ -12,6 +12,8 @@ import { runDoctor, formatDiagnosticError } from "./commands/doctor.js";
 import { runLogin } from "./commands/login.js";
 import { runLogout } from "./commands/logout.js";
 import { runUsage } from "./commands/usage.js";
+import { runUpdateCommand } from "./commands/update.js";
+import { runVersionCommand } from "./commands/version.js";
 import {
   EngineContractError,
   formatEngineContractError,
@@ -30,6 +32,15 @@ import {
 import { assertEmbeddedLauncherReleasePolicy } from "./privacy/release-policy.js";
 import { zeroizeLauncherIpcBytes } from "./privacy/launcher-ipc.js";
 import { getEngineContractVersion, getLauncherVersion } from "./version.js";
+import { UpdateError, formatUpdateError } from "./update/errors.js";
+import { compiledVerifiedUpdatePolicy } from "./update/policy.js";
+import { LauncherUpdateRequiredError } from "./update/selection.js";
+import type {
+  RunVerifiedUpdateOptions,
+  VerifiedUpdatePolicy,
+  VerifiedUpdateResult,
+} from "./update/updater.js";
+import { getAppDataDir } from "./utils/paths.js";
 
 export interface CliOptions extends Partial<
   Omit<
@@ -50,8 +61,11 @@ export interface CliOptions extends Partial<
   credentialStore?: CredentialStore;
   browserOpener?: BrowserOpener;
   clock?: Clock;
+  updatePolicy?: VerifiedUpdatePolicy | null;
+  updateRunner?: (
+    options: RunVerifiedUpdateOptions,
+  ) => Promise<VerifiedUpdateResult>;
 }
-
 export async function runCli(options: CliOptions = {}): Promise<void> {
   const argv = [...(options.argv ?? process.argv.slice(2))];
   const launcherVersion = getLauncherVersion();
@@ -75,12 +89,87 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
     return;
   }
 
-  if (
-    firstArg === "--version" ||
-    firstArg === "-v" ||
-    (argv.length === 1 && firstArg === "version")
-  ) {
+  if (firstArg === "--version" || firstArg === "-v") {
     stdout.write(`${launcherVersion}\n`);
+    return;
+  }
+
+  let updatePolicy: VerifiedUpdatePolicy | null;
+  try {
+    updatePolicy = resolveUpdatePolicy(options, launcherVersion);
+  } catch (error) {
+    stderr.write(
+      "GOAT launcher error: This build has invalid update trust material.\n",
+    );
+    exit(1);
+    return;
+  }
+  const appDataDirectory =
+    options.appDataDir ??
+    getAppDataDir({
+      env: options.env ?? options.processLike?.env ?? process.env,
+      platform:
+        options.platform ?? options.processLike?.platform ?? process.platform,
+      homeDir: options.homeDir,
+    });
+
+  if (firstArg === "version") {
+    if (argv.length !== 1) {
+      stderr.write("GOAT version does not accept arguments.\n");
+      exit(2);
+      return;
+    }
+    try {
+      await runVersionCommand({
+        launcherVersion,
+        platform:
+          options.platform ?? options.processLike?.platform ?? process.platform,
+        architecture:
+          options.architecture ?? options.processLike?.arch ?? process.arch,
+        appDataDirectory,
+        policy: updatePolicy,
+        stdout,
+      });
+    } catch (error) {
+      if (error instanceof UpdateError) {
+        stderr.write(`${formatUpdateError(error)}\n`);
+      } else {
+        stderr.write("GOAT version information is unavailable.\n");
+      }
+      exit(1);
+    }
+    return;
+  }
+
+  if (firstArg === "update") {
+    try {
+      await runUpdateCommand({
+        args: argv.slice(1),
+        appDataDirectory,
+        policy: updatePolicy,
+        stdout,
+        stderr,
+        runner: options.updateRunner,
+      });
+    } catch (error) {
+      if (error instanceof LauncherUpdateRequiredError) {
+        stderr.write(
+          `${formatUpdateError(error)}\nNext step: npm install --global goatcli@${error.minimumLauncherVersion}\n`,
+        );
+      } else if (error instanceof UpdateError) {
+        stderr.write(`${formatUpdateError(error)}\n`);
+      } else {
+        stderr.write(
+          "GOAT update error: The verified update could not be completed.\n",
+        );
+      }
+      exit(
+        error instanceof UpdateError &&
+          error.code === "GOAT_UPDATE_INVALID_ARGUMENT"
+          ? 2
+          : 1,
+      );
+    }
     return;
   }
 
@@ -188,6 +277,8 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
       ...options,
       args: argv,
       launcherVersion: engineContractVersion,
+      installedUpdatePolicy:
+        options.installedUpdatePolicy ?? updatePolicy?.activation,
       privacyCredential: preparedCredential,
       privacyCredentialProvider:
         privacyMode === "lazy"
@@ -223,6 +314,27 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
   if (launchResult) finishWithLaunchResult(launchResult, { exit, killSelf });
 }
 
+function resolveUpdatePolicy(
+  options: CliOptions,
+  launcherVersion: string,
+): VerifiedUpdatePolicy | null {
+  if (options.updatePolicy !== undefined) return options.updatePolicy;
+  const platform =
+    options.platform ?? options.processLike?.platform ?? process.platform;
+  const architecture =
+    options.architecture ?? options.processLike?.arch ?? process.arch;
+  if (
+    (platform !== "win32" && platform !== "darwin") ||
+    (architecture !== "x64" && architecture !== "arm64")
+  ) {
+    return null;
+  }
+  return compiledVerifiedUpdatePolicy({
+    launcherVersion,
+    platform,
+    architecture,
+  });
+}
 export function finishWithLaunchResult(
   result: EngineLaunchResult,
   options: {
