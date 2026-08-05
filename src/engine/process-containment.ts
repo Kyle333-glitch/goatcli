@@ -10,7 +10,7 @@ import { createInterface } from "node:readline";
 const JOB_GUARD_START_TIMEOUT_MS = 15_000;
 const JOB_GUARD_STOP_TIMEOUT_MS = 5_000;
 
-const WINDOWS_JOB_GUARD_SCRIPT = String.raw`
+const WINDOWS_JOB_GUARD_SCRIPT = `
 $ErrorActionPreference = "Stop"
 $source = @"
 using System;

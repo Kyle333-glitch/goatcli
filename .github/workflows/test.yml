@@ -296,11 +296,11 @@ jobs:
 
       - name: Install goat-engine dependencies
         working-directory: goat-engine
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Install goat-control-plane dependencies
         working-directory: goat-control-plane
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Print runner platform and architecture
         run: node -e "console.log('process.platform=' + process.platform); console.log('process.arch=' + process.arch);"

@@ -434,8 +434,12 @@ function rolePid(run: TreeRun, role: FixtureRole): number {
       candidate.role === role &&
       Number.isSafeInteger(candidate.pid),
   );
-  assert.ok(message?.pid && message.pid > 0, "missing fixture PID for " + role);
-  return message.pid;
+  assert.ok(message, "missing fixture PID evidence for " + role);
+  const pid = message.pid;
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) {
+    throw new Error("invalid fixture PID for " + role);
+  }
+  return pid;
 }
 
 function treePids(run: TreeRun): number[] {
@@ -465,7 +469,8 @@ async function assertTreeStopped(run: TreeRun): Promise<void> {
 
 function assertSentinelAlive(run: TreeRun): void {
   const sentinelPid = run.sentinel.child.pid;
-  assert.ok(sentinelPid && sentinelPid > 0);
+  assert.ok(sentinelPid, "missing sentinel PID");
+  assert.ok(sentinelPid > 0, "sentinel PID is not positive");
   assert.equal(isProcessAlive(sentinelPid), true);
   assert.equal(run.sentinel.child.exitCode, null);
   assert.equal(run.sentinel.child.signalCode, null);

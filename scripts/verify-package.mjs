@@ -9,6 +9,63 @@ const pkg = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
 );
 const failures = [];
+const SECRET_PATTERNS = [
+  /BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY/i,
+  /BEGIN\s+EC\s+PRIVATE\s+KEY/i,
+  /BEGIN\s+DSA\s+PRIVATE\s+KEY/i,
+  /BEGIN\s+OPENSSH\s+PRIVATE\s+KEY/i,
+  /BEGIN\s+PGP\s+PRIVATE\s+KEY/i,
+  /BEGIN\s+ENCRYPTED\s+PRIVATE\s+KEY/i,
+  /BEGIN\s+CERTIFICATE/i,
+  /\bapi[_-]?key\s*[:=]\s*["']?[A-Za-z0-9_\-/+=]{8,}["']?/i,
+  /\bapi[_-]?secret\s*[:=]\s*["']?[A-Za-z0-9_\-/+=]{8,}["']?/i,
+  /\bpassword\s*[:=]\s*["'][^"']{8,}["']/i,
+  /\btoken\s*[:=]\s*["'][A-Za-z0-9_\-/+=]{16,}["']/i,
+  /AKIA[0-9A-Z]{16}/,
+  /gh[opsr]_[a-zA-Z0-9]{36}/,
+];
+const FORBIDDEN_ARTIFACT_PATTERNS = [
+  /@opentelemetry\//i,
+  /@sentry\//i,
+  /(?:^|["'])posthog(?:-node|-js)?(?:["'/])/im,
+  /@datadog\//i,
+  /@segment\/analytics/i,
+  /(?:^|["'])newrelic(?:["'/])/im,
+  /OTEL_EXPORTER_[A-Z_]+/,
+  /(?:ingest\.)?sentry\.io\/api\//i,
+  /(?:app|us\.i)\.posthog\.com/i,
+];
+const BLOCKED_EXTENSIONS = new Set([
+  ".pem",
+  ".key",
+  ".crt",
+  ".cer",
+  ".der",
+  ".p12",
+  ".pfx",
+  ".node",
+  ".exe",
+  ".dll",
+  ".so",
+  ".dylib",
+  ".macho",
+  ".zip",
+  ".bin",
+]);
+const TEXT_EXTENSIONS = new Set([
+  ".js",
+  ".ts",
+  ".json",
+  ".md",
+  ".yml",
+  ".yaml",
+  ".txt",
+  ".html",
+  ".css",
+  ".svg",
+  ".xml",
+  ".csv",
+]);
 const report = {
   schemaVersion: 1,
   evidenceType: "artifact",
@@ -540,123 +597,77 @@ function parseReportPath(args) {
 }
 
 function scanPackedFiles(fileEntries, packageRoot, failures) {
-  const secretPatterns = [
-    /BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY/i,
-    /BEGIN\s+EC\s+PRIVATE\s+KEY/i,
-    /BEGIN\s+DSA\s+PRIVATE\s+KEY/i,
-    /BEGIN\s+OPENSSH\s+PRIVATE\s+KEY/i,
-    /BEGIN\s+PGP\s+PRIVATE\s+KEY/i,
-    /BEGIN\s+ENCRYPTED\s+PRIVATE\s+KEY/i,
-    /BEGIN\s+CERTIFICATE/i,
-    /\bapi[_-]?key\s*[:=]\s*["']?[A-Za-z0-9_\-/+=]{8,}["']?/i,
-    /\bapi[_-]?secret\s*[:=]\s*["']?[A-Za-z0-9_\-/+=]{8,}["']?/i,
-    /\bpassword\s*[:=]\s*["'][^"']{8,}["']/i,
-    /\btoken\s*[:=]\s*["'][A-Za-z0-9_\-/+=]{16,}["']/i,
-    /AKIA[0-9A-Z]{16}/,
-    /gh[opsr]_[a-zA-Z0-9]{36}/,
-  ];
-  const forbiddenArtifactPatterns = [
-    /@opentelemetry\//i,
-    /@sentry\//i,
-    /(?:^|["'])posthog(?:-node|-js)?(?:["'\/])/im,
-    /@datadog\//i,
-    /@segment\/analytics/i,
-    /(?:^|["'])newrelic(?:["'\/])/im,
-    /OTEL_EXPORTER_[A-Z_]+/,
-    /(?:ingest\.)?sentry\.io\/api\//i,
-    /(?:app|us\.i)\.posthog\.com/i,
-  ];
-  const blockedExtensions = new Set([
-    ".pem",
-    ".key",
-    ".crt",
-    ".cer",
-    ".der",
-    ".p12",
-    ".pfx",
-    ".node",
-    ".exe",
-    ".dll",
-    ".so",
-    ".dylib",
-    ".macho",
-    ".zip",
-    ".bin",
-  ]);
-  const textExtensions = new Set([
-    ".js",
-    ".ts",
-    ".json",
-    ".md",
-    ".yml",
-    ".yaml",
-    ".txt",
-    ".html",
-    ".css",
-    ".svg",
-    ".xml",
-    ".csv",
-  ]);
-  for (const { path: filePath, size } of fileEntries) {
-    const normalized = filePath.replaceAll("\\", "/");
-    const resolved = resolvePackedPath(packageRoot, normalized);
-    if (!resolved) {
-      failures.push(
-        `packed path ${normalized} resolves outside the package root or is not a regular file`,
-      );
-      continue;
-    }
-    const lower = normalized.toLowerCase();
-    const basename = lower.split("/").pop() ?? "";
-    const ext = basename.includes(".")
-      ? basename.slice(basename.lastIndexOf("."))
-      : "";
-    if (blockedExtensions.has(ext)) {
-      failures.push(
-        `packed payload contains unexpected key/certificate/binary extension: ${normalized}`,
-      );
-    }
-
-    let raw;
-    try {
-      raw = fs.readFileSync(resolved);
-    } catch {
-      failures.push(`could not read packed file ${normalized}`);
-      continue;
-    }
-    if (raw.length !== size) {
-      failures.push(
-        `packed file ${normalized} does not match npm file-size metadata`,
-      );
-    }
-    if (!textExtensions.has(ext)) continue;
-    if (containsBinaryPayload(raw)) {
-      failures.push(
-        `packed file ${normalized} appears to contain non-text (native/binary) bytes`,
-      );
-      continue;
-    }
-
-    const contents = raw.toString("utf8");
-    for (const pattern of secretPatterns) {
-      if (pattern.test(contents)) {
-        failures.push(
-          `packed file ${normalized} may contain secret material matching ${pattern.source}`,
-        );
-        break;
-      }
-    }
-    if (normalized.startsWith("dist/")) {
-      for (const pattern of forbiddenArtifactPatterns) {
-        if (pattern.test(contents)) {
-          failures.push(
-            `packed runtime file ${normalized} contains forbidden telemetry or remote-sink material matching ${pattern.source}`,
-          );
-          break;
-        }
-      }
-    }
+  for (const entry of fileEntries) {
+    scanPackedFile(entry, packageRoot, failures);
   }
+}
+
+function scanPackedFile({ path: filePath, size }, packageRoot, failures) {
+  const normalized = filePath.replaceAll("\\", "/");
+  const resolved = resolvePackedPath(packageRoot, normalized);
+  if (!resolved) {
+    failures.push(
+      `packed path ${normalized} resolves outside the package root or is not a regular file`,
+    );
+    return;
+  }
+
+  const ext = fileExtension(normalized);
+  if (BLOCKED_EXTENSIONS.has(ext)) {
+    failures.push(
+      `packed payload contains unexpected key/certificate/binary extension: ${normalized}`,
+    );
+  }
+
+  let raw;
+  try {
+    raw = fs.readFileSync(resolved);
+  } catch {
+    failures.push(`could not read packed file ${normalized}`);
+    return;
+  }
+  if (raw.length !== size) {
+    failures.push(
+      `packed file ${normalized} does not match npm file-size metadata`,
+    );
+  }
+  if (!TEXT_EXTENSIONS.has(ext)) return;
+  if (containsBinaryPayload(raw)) {
+    failures.push(
+      `packed file ${normalized} appears to contain non-text (native/binary) bytes`,
+    );
+    return;
+  }
+
+  const contents = raw.toString("utf8");
+  appendPatternFailure(
+    contents,
+    SECRET_PATTERNS,
+    (pattern) =>
+      `packed file ${normalized} may contain secret material matching ${pattern.source}`,
+    failures,
+  );
+  if (normalized.startsWith("dist/")) {
+    appendPatternFailure(
+      contents,
+      FORBIDDEN_ARTIFACT_PATTERNS,
+      (pattern) =>
+        `packed runtime file ${normalized} contains forbidden telemetry or remote-sink material matching ${pattern.source}`,
+      failures,
+    );
+  }
+}
+
+function fileExtension(normalized) {
+  const basename = normalized.toLowerCase().split("/").pop() ?? "";
+  return basename.includes(".")
+    ? basename.slice(basename.lastIndexOf("."))
+    : "";
+}
+
+function appendPatternFailure(contents, patterns, createMessage, failures) {
+  const pattern = patterns.find((candidate) => candidate.test(contents));
+  if (pattern) failures.push(createMessage(pattern));
 }
 
 function resolvePackedPath(packageRoot, normalized) {
