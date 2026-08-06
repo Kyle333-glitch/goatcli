@@ -42,6 +42,11 @@ export type ProcessTerminatorCommand = (
   args: readonly string[],
 ) => ProcessTerminatorResult;
 
+export type ProcessGroupTerminator = (
+  processGroupId: number,
+  signal: NodeJS.Signals,
+) => void;
+
 export interface AtomicFileSystem {
   mkdir(path: string, options: { recursive: true }): Promise<unknown>;
   writeFile(
@@ -82,7 +87,10 @@ export interface PlatformAdapter {
   terminateProcess(
     child: Pick<ChildProcess, "kill" | "pid">,
     signal: NodeJS.Signals,
-    options?: { runCommand?: ProcessTerminatorCommand },
+    options?: {
+      runCommand?: ProcessTerminatorCommand;
+      killGroup?: ProcessGroupTerminator;
+    },
   ): void;
   replaceFileAtomically(
     path: string,
@@ -283,19 +291,60 @@ function terminateWindowsProcessTree(
   signal: NodeJS.Signals,
   options: { runCommand?: ProcessTerminatorCommand } = {},
 ): void {
-  // Try graceful termination first via child.kill
-  terminateWithSignal(child, signal);
-
-  if (!child.pid) return;
+  if (!isValidProcessId(child.pid)) {
+    terminateWithSignal(child, signal);
+    return;
+  }
 
   const run = options.runCommand ?? runProcessTerminator;
+  const pid = child.pid;
 
-  // Try graceful process tree termination (no /F)
-  const gracefulResult = run("taskkill", ["/pid", String(child.pid), "/T"]);
-  if (gracefulResult.status === 0) return;
+  // Preserve the parent long enough for taskkill to traverse its descendants.
+  const gracefulResult = run("taskkill", ["/pid", String(pid), "/T"]);
+  if (gracefulResult.status === 0) {
+    // Node processes can consume the console-control event used by SIGINT and
+    // SIGBREAK. A successful graceful taskkill command is not proof that the
+    // tree actually closed, so force the tree for those user-interrupt paths.
+    if (signal !== "SIGINT" && signal !== "SIGBREAK") return;
+    const forcefulInterruptResult = run("taskkill", [
+      "/pid",
+      String(pid),
+      "/T",
+      "/F",
+    ]);
+    if (forcefulInterruptResult.status === 0) return;
+  }
 
-  // Fall back to forceful termination
-  run("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
+  const forcefulResult = run("taskkill", ["/pid", String(pid), "/T", "/F"]);
+  if (forcefulResult.status === 0) return;
+
+  // Fall back to direct termination only when tree termination is unavailable.
+  terminateWithSignal(child, signal);
+}
+
+function terminatePosixProcessGroup(
+  child: Pick<ChildProcess, "kill" | "pid">,
+  signal: NodeJS.Signals,
+  options: { killGroup?: ProcessGroupTerminator } = {},
+): void {
+  if (isValidProcessId(child.pid)) {
+    const killGroup =
+      options.killGroup ??
+      ((processGroupId, forwardedSignal) => {
+        process.kill(processGroupId, forwardedSignal);
+      });
+    try {
+      killGroup(-child.pid, signal);
+      return;
+    } catch {
+      // Fall back to the exact child when its process group is already gone.
+    }
+  }
+  terminateWithSignal(child, signal);
+}
+
+function isValidProcessId(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 function terminateWithSignal(
@@ -316,6 +365,7 @@ function runProcessTerminator(
   const result = spawnSync(command, [...args], {
     stdio: "ignore",
     windowsHide: true,
+    shell: false,
   });
   return {
     status: result.status,
@@ -380,7 +430,7 @@ const macosAdapter: PlatformAdapter = {
     hasExecutablePermission("darwin", filePath, fileSystem),
   ensureExecutablePermission: (filePath, fileSystem) =>
     ensureExecutablePermission("darwin", filePath, fileSystem),
-  terminateProcess: (child, signal) => terminateWithSignal(child, signal),
+  terminateProcess: terminatePosixProcessGroup,
   replaceFileAtomically: (filePath, data, options = {}) =>
     replaceFileAtomically(filePath, data, {
       ...options,

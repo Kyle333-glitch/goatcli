@@ -19,6 +19,12 @@ import {
 } from "./launch.js";
 import type { EngineFileSystem } from "./validate.js";
 import { engineManifestTrustPolicy } from "../privacy/release-policy.js";
+import {
+  createTestBundleTrust,
+  createTestUpdateBundle,
+} from "../../test/v0.4.0-update/update-bundle-fixture.js";
+import { activateCandidate } from "../update/activation.js";
+import { recoverInstallation } from "../update/recovery.js";
 
 test("launchEngine forwards args, cwd, inherited stdio, no shell, and propagates exit code", async () => {
   const executablePath = "C:\\Program Files\\GOAT Engine\\goat-engine.exe";
@@ -63,11 +69,140 @@ test("launchEngine forwards args, cwd, inherited stdio, no shell, and propagates
     options: {
       cwd: "D:\\work dir",
       env: {},
-      stdio: ["inherit", "inherit", "inherit", "pipe", "pipe"],
+      stdio: "inherit",
       shell: false,
       windowsHide: true,
+      detached: true,
     },
   });
+});
+
+test("launchEngine enforces the caller-supplied engine trust policy", async () => {
+  const executablePath = "C:\\GOAT\\engines\\dev\\win32-x64\\goat-engine.exe";
+  const manifestPath = "C:\\GOAT\\engines\\dev\\win32-x64\\goat-engine.json";
+  const engineBytes = Buffer.from("engine");
+  const fakeFs = makeFakeFs({
+    [executablePath]: { content: engineBytes, isFile: true },
+    [manifestPath]: {
+      content: JSON.stringify(makeManifest(sha256(engineBytes))),
+      isFile: true,
+    },
+  });
+  let spawned = false;
+
+  await assert.rejects(
+    () =>
+      launchEngine({
+        args: ["run"],
+        launcherVersion: "0.0.6",
+        platform: "win32",
+        architecture: "x64",
+        resolvedEngine: makeResolvedEngine({ executablePath, manifestPath }),
+        fs: fakeFs,
+        trustPolicy: {
+          ...engineManifestTrustPolicy(),
+          allowUnsignedDevelopment: false,
+        },
+        spawnEngine: () => {
+          spawned = true;
+          return new FakeChild() as unknown as ChildProcess;
+        },
+        processLike: new FakeProcess("win32", "x64", "D:\\repo"),
+      }),
+    (error) =>
+      error instanceof EngineContractError &&
+      error.code === "GOAT_ENGINE_SIGNATURE_INVALID",
+  );
+  assert.equal(spawned, false);
+});
+
+test("launchEngine enforces trust policy during legacy engine resolution", async () => {
+  const executablePath =
+    "C:\\GOAT legacy\\engines\\dev\\win32-x64\\bin\\goat-engine.exe";
+  const manifestPath =
+    "C:\\GOAT legacy\\engines\\dev\\win32-x64\\goat-engine.json";
+  const engineBytes = Buffer.from("legacy engine");
+  const fakeFs = makeFakeFs({
+    [executablePath]: { content: engineBytes, isFile: true },
+    [manifestPath]: {
+      content: JSON.stringify(makeManifest(sha256(engineBytes))),
+      isFile: true,
+    },
+  });
+  let spawned = false;
+
+  await assert.rejects(
+    () =>
+      launchEngine({
+        args: ["run"],
+        launcherVersion: "0.0.6",
+        platform: "win32",
+        architecture: "x64",
+        appDataDir: "C:\\GOAT legacy",
+        releaseChannel: "dev",
+        fs: fakeFs,
+        trustPolicy: {
+          ...engineManifestTrustPolicy(),
+          allowUnsignedDevelopment: false,
+        },
+        spawnEngine: () => {
+          spawned = true;
+          return new FakeChild() as unknown as ChildProcess;
+        },
+        processLike: new FakeProcess("win32", "x64", "D:\\repo"),
+      }),
+    (error) =>
+      error instanceof EngineContractError &&
+      error.code === "GOAT_ENGINE_SIGNATURE_INVALID",
+  );
+  assert.equal(spawned, false);
+});
+
+test("installed engine launch enforces a restrictive caller trust policy before spawn", async (context) => {
+  const trust = createTestBundleTrust();
+  const fixture = await createTestUpdateBundle(context, { trust });
+  await activateCandidate({
+    appDataDirectory: fixture.appData,
+    staged: fixture.staged,
+    receiptSha256: fixture.receipt.receiptSha256,
+    policy: fixture.activationPolicy,
+  });
+  await recoverInstallation({
+    appDataDirectory: fixture.appData,
+    policy: fixture.activationPolicy,
+    now: () => Date.parse("2030-01-01T00:00:00Z"),
+  });
+  let spawned = false;
+
+  await assert.rejects(
+    () =>
+      launchEngine({
+        args: ["run"],
+        launcherVersion: "0.4.0",
+        appDataDir: fixture.appData,
+        platform: fixture.platform,
+        architecture: fixture.architecture,
+        installedUpdatePolicy: fixture.activationPolicy,
+        trustPolicy: {
+          ...engineManifestTrustPolicy(),
+          releasePolicyDigest: trust.releasePolicyDigest,
+          engineManifestKeyIds: [],
+        },
+        spawnEngine: () => {
+          spawned = true;
+          return new FakeChild(4_201) as unknown as ChildProcess;
+        },
+        processLike: new FakeProcess(
+          fixture.platform,
+          fixture.architecture,
+          fixture.appData,
+        ),
+      }),
+    (error) =>
+      error instanceof EngineContractError &&
+      error.code === "GOAT_ENGINE_SIGNATURE_INVALID",
+  );
+  assert.equal(spawned, false);
 });
 
 test("launchValidatedEngine forwards cancellation signals and removes listeners after exit", async () => {
@@ -117,7 +252,7 @@ test("launchValidatedEngine uses Windows taskkill for process-tree termination",
   assert.deepEqual(commandCalls, [
     { command: "taskkill", args: ["/pid", "4242", "/T"] },
   ]);
-  assert.deepEqual(child.killedSignals, ["SIGTERM"]);
+  assert.deepEqual(child.killedSignals, []);
 
   child.emit("exit", 0, null);
   await resultPromise;
@@ -162,6 +297,40 @@ test("launchValidatedEngine cleans up child on launcher process exit without a s
 
   child.emit("exit", 0, null);
   await resultPromise;
+});
+
+test("launchValidatedEngine creates and terminates a macOS process group", async () => {
+  const fakeProcess = new FakeProcess("darwin", "arm64", "/Users/Test/repo");
+  const child = new FakeChild(4242);
+  let detached: boolean | undefined;
+  const groupCalls: Array<{
+    processGroupId: number;
+    signal: NodeJS.Signals;
+  }> = [];
+  const spawnEngine: SpawnEngine = (_command, _args, options) => {
+    detached = options.detached;
+    return child as unknown as ChildProcess;
+  };
+  const resultPromise = launchValidatedEngine(
+    { executablePath: "/Users/Test/GOAT/goat-engine", platform: "darwin" },
+    [],
+    {
+      cwd: "/Users/Test/repo",
+      spawnEngine,
+      processLike: fakeProcess,
+      processGroupTerminator(processGroupId, signal) {
+        groupCalls.push({ processGroupId, signal });
+      },
+    },
+  );
+
+  assert.equal(detached, true);
+  fakeProcess.emit("SIGTERM");
+  assert.deepEqual(groupCalls, [{ processGroupId: -4242, signal: "SIGTERM" }]);
+  assert.deepEqual(child.killedSignals, []);
+
+  child.emit("exit", 0, null);
+  assert.deepEqual(await resultPromise, { exitCode: 0, signal: null });
 });
 
 test("launchValidatedEngine propagates child termination signal", async () => {
@@ -224,6 +393,103 @@ test("launchEngine reports spawn failures with stable error code", async () => {
       return true;
     },
   );
+});
+
+test("launchValidatedEngine removes listeners after a spawn error", async () => {
+  const fakeProcess = new FakeProcess("win32", "x64", "D:\\repo");
+  const child = new FakeChild();
+  const spawnEngine: SpawnEngine = () => {
+    queueMicrotask(() => child.emit("error", new Error("TOKEN_SECRET_8MVP")));
+    return child as unknown as ChildProcess;
+  };
+
+  await assert.rejects(
+    () =>
+      launchValidatedEngine(
+        { executablePath: "C:\\GOAT\\goat-engine.exe", platform: "win32" },
+        [],
+        { cwd: "D:\\repo", spawnEngine, processLike: fakeProcess },
+      ),
+    (error) =>
+      error instanceof EngineContractError &&
+      error.code === "GOAT_ENGINE_SPAWN_FAILED",
+  );
+
+  assert.equal(fakeProcess.listenerCount("SIGINT"), 0);
+  assert.equal(fakeProcess.listenerCount("SIGTERM"), 0);
+  assert.equal(fakeProcess.listenerCount("SIGBREAK"), 0);
+  assert.equal(fakeProcess.listenerCount("exit"), 0);
+});
+
+test("launchValidatedEngine never terminates the child twice for one signal", async () => {
+  const fakeProcess = new FakeProcess("win32", "x64", "D:\\repo");
+  const child = new FakeChild(4242);
+  const commandCalls: Array<{ command: string; args: readonly string[] }> = [];
+  const spawnEngine: SpawnEngine = () => child as unknown as ChildProcess;
+  const resultPromise = launchValidatedEngine(
+    { executablePath: "C:\\GOAT\\goat-engine.exe", platform: "win32" },
+    [],
+    {
+      cwd: "D:\\repo",
+      spawnEngine,
+      processLike: fakeProcess,
+      processTerminator(command, args) {
+        commandCalls.push({ command, args });
+        return { status: 0 };
+      },
+    },
+  );
+
+  fakeProcess.emit("SIGTERM");
+  assert.equal(commandCalls.length, 1);
+  assert.deepEqual(commandCalls, [
+    { command: "taskkill", args: ["/pid", "4242", "/T"] },
+  ]);
+  assert.deepEqual(child.killedSignals, []);
+
+  child.emit("exit", 0, null);
+  await resultPromise;
+
+  // After exit, no further signal delivery may terminate again.
+  fakeProcess.emit("SIGTERM");
+  assert.equal(commandCalls.length, 1);
+  assert.deepEqual(child.killedSignals, []);
+});
+
+test("IPC setup failure racing with child exit resolves without duplicate termination", async () => {
+  const fakeProcess = new FakeProcess("win32", "x64", "D:\\repo");
+  const child = new FakeChild(4242);
+  const commandCalls: Array<{ command: string; args: readonly string[] }> = [];
+  const spawnEngine: SpawnEngine = () => child as unknown as ChildProcess;
+  const resultPromise = launchValidatedEngine(
+    { executablePath: "C:\\GOAT\\goat-engine.exe", platform: "win32" },
+    ["privacy", "diagnostics", "submit"],
+    {
+      cwd: "D:\\repo",
+      spawnEngine,
+      processLike: fakeProcess,
+      processTerminator(command, args) {
+        commandCalls.push({ command, args });
+        return { status: 1 };
+      },
+      privacyIpc: {
+        mode: "eager",
+        engineIntegrity: "verified",
+        credentialStore: "available",
+        credential: new TextEncoder().encode("A".repeat(43)),
+        credentialExpiresAtUnixMs: Date.now() + 60_000,
+        launcherPid: fakeProcess.pid,
+      },
+    },
+  );
+
+  // The IPC handshake has no child pipes available (FakeChild), so setup
+  // fails while the child exits concurrently.
+  child.emit("exit", 4, null);
+  const result = await resultPromise;
+  assert.deepEqual(result, { exitCode: 4, signal: null });
+  assert.deepEqual(child.killedSignals, []);
+  assert.equal(commandCalls.length, 0);
 });
 
 test("getForwardedSignals includes supported platform termination signals", () => {

@@ -57,4 +57,3 @@ export const GOAT_RELEASE_POLICY = {
     "authenticatedFrameProtocol": "GOATIPC1"
   }
 } as const
-

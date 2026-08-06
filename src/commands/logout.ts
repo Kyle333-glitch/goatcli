@@ -1,3 +1,4 @@
+import { CredentialStoreError } from "../auth/credentials.js";
 import type { AuthApiClient, CredentialStore } from "../auth/types.js";
 
 export interface LogoutOptions {
@@ -9,7 +10,20 @@ export interface LogoutOptions {
 }
 
 export async function runLogout(options: LogoutOptions): Promise<number> {
-  const credentials = await options.store.get();
+  let credentials;
+  try {
+    credentials = await options.store.get();
+  } catch (error) {
+    if (
+      error instanceof CredentialStoreError &&
+      (error.code === "GOAT_CREDENTIAL_MIGRATION_FAILED" ||
+        error.code === "GOAT_CREDENTIALS_INVALID")
+    ) {
+      options.stderr.write("GOAT login must be renewed. Run `goat login`.\n");
+      return 1;
+    }
+    throw error;
+  }
   if (!credentials) {
     options.stdout.write("No GOAT login credentials found.\n");
     return 0;

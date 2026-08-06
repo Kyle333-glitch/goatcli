@@ -289,6 +289,97 @@ test("fixed launcher frames never contain privacy canaries", async () => {
   session.dispose();
 });
 
+test("maps transport write failures to a fixed code without exposing secrets", async () => {
+  const transport = new RejectingWriteTransport();
+  await assert.rejects(
+    () => openLauncherIpcSession({ ...baseOptions(transport) }),
+    (error) => {
+      assert.ok(error instanceof LauncherIpcError);
+      assert.equal(error.code, "LAUNCHER_IPC_WRITE_FAILED");
+      const rendered = JSON.stringify({
+        message: error.message,
+        code: error.code,
+      });
+      assert.equal(rendered.includes("TOKEN_SECRET_8MVP"), false);
+      assert.equal(rendered.includes("SOURCE_CODE_SECRET_4JK2"), false);
+      return true;
+    },
+  );
+  assert.equal(transport.closed, true);
+});
+
+test("never zeroizes the caller-owned credential buffer", async () => {
+  const callerCredential = Uint8Array.from(CREDENTIAL);
+  const transport = new EngineHarness();
+  const session = await openLauncherIpcSession({
+    ...baseOptions(transport),
+    credential: callerCredential,
+  });
+  await session.end();
+
+  assert.deepEqual(callerCredential, CREDENTIAL);
+  transport.writeReferences.forEach(assertZeroed);
+});
+
+test("error diagnostics never contain credential or secret bytes", async () => {
+  const canaries = [
+    new TextDecoder().decode(CREDENTIAL),
+    "PROMPT_SECRET_7QX9",
+    "TOKEN_SECRET_8MVP",
+    "PATH_SECRET_3HT6",
+  ];
+  const tampered = new EngineHarness({ tamperResponse: true });
+  await assert.rejects(
+    () => openLauncherIpcSession(baseOptions(tampered)),
+    (error) => {
+      const rendered = JSON.stringify({
+        message: error instanceof Error ? error.message : String(error),
+        code: error instanceof LauncherIpcError ? error.code : "unknown",
+      });
+      for (const canary of canaries) {
+        assert.equal(rendered.includes(canary), false);
+      }
+      return true;
+    },
+  );
+
+  const timeoutTransport = new EngineHarness({ suppressResponses: true });
+  await assert.rejects(
+    () =>
+      openLauncherIpcSession({
+        ...baseOptions(timeoutTransport),
+        timeoutMs: 5,
+        monotonicNow: () => performance.now(),
+      }),
+    (error) => {
+      const rendered = JSON.stringify({
+        message: error instanceof Error ? error.message : String(error),
+        code: error instanceof LauncherIpcError ? error.code : "unknown",
+      });
+      for (const canary of canaries) {
+        assert.equal(rendered.includes(canary), false);
+      }
+      return true;
+    },
+  );
+});
+
+class RejectingWriteTransport implements LauncherIpcTransport {
+  closed = false;
+
+  async write(_bytes: Uint8Array, _signal: AbortSignal): Promise<void> {
+    throw new Error("TOKEN_SECRET_8MVP");
+  }
+
+  read(_signal: AbortSignal): Promise<Uint8Array | null> {
+    return new Promise(() => undefined);
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+}
+
 type Ack = {
   protocol_version: 1;
   message_type: "session_ack";

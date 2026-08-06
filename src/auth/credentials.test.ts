@@ -54,38 +54,16 @@ test("uses only the OS keyring for active credentials and verifies writes", asyn
   });
 });
 
-test("migrates a strict legacy file only after keyring write and readback", async () => {
+test("refuses automatic plaintext migration and never mutates legacy files", async () => {
   await withCredentialRoot(async (root, platform) => {
     const keyring = new MemoryKeyring();
     const legacyPath = legacyCredentialPath(root, platform);
+    const stalePath = `${legacyPath}.SOURCE_CODE_SECRET_4JK2.tmp`;
     await fs.mkdir(path.dirname(legacyPath), { recursive: true });
     await fs.writeFile(legacyPath, JSON.stringify(VALID), "utf8");
-    await fs.writeFile(
-      `${legacyPath}.SOURCE_CODE_SECRET_4JK2.tmp`,
-      "stale",
-      "utf8",
-    );
+    await fs.writeFile(stalePath, "stale", "utf8");
 
     const store = createCredentialStore(storeOptions(root, platform, keyring));
-    assert.deepEqual(await store.get(), VALID);
-    assert.equal(keyring.raw, JSON.stringify(VALID));
-    await assert.rejects(() => fs.stat(legacyPath), hasFsCode("ENOENT"));
-    await assert.rejects(
-      () => fs.stat(`${legacyPath}.SOURCE_CODE_SECRET_4JK2.tmp`),
-      hasFsCode("ENOENT"),
-    );
-  });
-});
-
-test("never authenticates from plaintext when migration cannot be verified", async () => {
-  await withCredentialRoot(async (root, platform) => {
-    const legacyPath = legacyCredentialPath(root, platform);
-    await fs.mkdir(path.dirname(legacyPath), { recursive: true });
-    await fs.writeFile(legacyPath, JSON.stringify(VALID), "utf8");
-    const keyring = new MemoryKeyring();
-    keyring.failSet = true;
-    const store = createCredentialStore(storeOptions(root, platform, keyring));
-
     await assert.rejects(
       () => store.get(),
       (error) =>
@@ -93,8 +71,19 @@ test("never authenticates from plaintext when migration cannot be verified", asy
         error.code === "GOAT_CREDENTIAL_MIGRATION_FAILED" &&
         !error.message.includes(legacyPath),
     );
-    assert.equal(await fs.readFile(legacyPath, "utf8"), JSON.stringify(VALID));
     assert.equal(keyring.raw, null);
+    assert.equal(await fs.readFile(legacyPath, "utf8"), JSON.stringify(VALID));
+    assert.equal(await fs.readFile(stalePath, "utf8"), "stale");
+
+    await store.set(VALID);
+    assert.deepEqual(await store.get(), VALID);
+    assert.equal(await fs.readFile(legacyPath, "utf8"), JSON.stringify(VALID));
+    assert.equal(await fs.readFile(stalePath, "utf8"), "stale");
+
+    await store.delete();
+    assert.equal(keyring.raw, null);
+    assert.equal(await fs.readFile(legacyPath, "utf8"), JSON.stringify(VALID));
+    assert.equal(await fs.readFile(stalePath, "utf8"), "stale");
   });
 });
 
@@ -117,11 +106,12 @@ test("rejects malformed keyring data without falling back to a legacy file", asy
   });
 });
 
-test("rejects oversized legacy credential files without reading them into the keyring", async () => {
+test("treats a legacy directory as relogin-required without mutating it", async () => {
   await withCredentialRoot(async (root, platform) => {
     const legacyPath = legacyCredentialPath(root, platform);
-    await fs.mkdir(path.dirname(legacyPath), { recursive: true });
-    await fs.writeFile(legacyPath, "TOKEN_SECRET_8MVP".repeat(300), "utf8");
+    const markerPath = path.join(legacyPath, "PATH_SECRET_3HT6");
+    await fs.mkdir(legacyPath, { recursive: true });
+    await fs.writeFile(markerPath, "untouched", "utf8");
     const keyring = new MemoryKeyring();
     const store = createCredentialStore(storeOptions(root, platform, keyring));
 
@@ -129,15 +119,36 @@ test("rejects oversized legacy credential files without reading them into the ke
       () => store.get(),
       (error) =>
         error instanceof CredentialStoreError &&
-        error.code === "GOAT_CREDENTIALS_INVALID" &&
+        error.code === "GOAT_CREDENTIAL_MIGRATION_FAILED" &&
         !error.message.includes(legacyPath),
     );
     assert.equal(keyring.raw, null);
-    assert.ok((await fs.stat(legacyPath)).size > 4 * 1024);
+    assert.equal(await fs.readFile(markerPath, "utf8"), "untouched");
   });
 });
 
-test("rejects legacy credential symlinks instead of migrating their targets", async (context) => {
+test("does not delete a replacement path after keyring write verification", async () => {
+  await withCredentialRoot(async (root, platform) => {
+    const legacyPath = legacyCredentialPath(root, platform);
+    const replacementPath = path.join(root, "attacker-replacement.json");
+    await fs.mkdir(path.dirname(legacyPath), { recursive: true });
+    await fs.writeFile(legacyPath, "original", "utf8");
+    await fs.writeFile(replacementPath, "replacement", "utf8");
+    const keyring = new MemoryKeyring();
+    keyring.beforeGet = async () => {
+      await fs.rm(legacyPath);
+      await fs.rename(replacementPath, legacyPath);
+    };
+    const store = createCredentialStore(storeOptions(root, platform, keyring));
+
+    await store.set(VALID);
+
+    assert.equal(keyring.raw, JSON.stringify(VALID));
+    assert.equal(await fs.readFile(legacyPath, "utf8"), "replacement");
+  });
+});
+
+test("leaves legacy credential symlinks and their targets untouched", async (context) => {
   await withCredentialRoot(async (root, platform) => {
     const legacyPath = legacyCredentialPath(root, platform);
     const targetPath = path.join(root, "TOKEN_SECRET_8MVP.json");
@@ -166,10 +177,11 @@ test("rejects legacy credential symlinks instead of migrating their targets", as
       () => store.get(),
       (error) =>
         error instanceof CredentialStoreError &&
-        error.code === "GOAT_CREDENTIALS_INVALID" &&
+        error.code === "GOAT_CREDENTIAL_MIGRATION_FAILED" &&
         !error.message.includes(targetPath),
     );
     assert.equal(keyring.raw, null);
+    assert.equal((await fs.lstat(legacyPath)).isSymbolicLink(), true);
     assert.equal(await fs.readFile(targetPath, "utf8"), JSON.stringify(VALID));
   });
 });
@@ -220,8 +232,12 @@ test("refresh helper revokes and clears a rotated credential when persistence fa
 class MemoryKeyring implements KeyringLike {
   raw: string | null = null;
   failSet = false;
+  beforeGet?: () => Promise<void>;
 
   async getPassword(): Promise<string | null> {
+    const beforeGet = this.beforeGet;
+    this.beforeGet = undefined;
+    await beforeGet?.();
     return this.raw;
   }
 
@@ -279,12 +295,4 @@ function legacyCredentialPath(
     }),
     "auth.json",
   );
-}
-
-function hasFsCode(code: string): (error: unknown) => boolean {
-  return (error) =>
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === code;
 }

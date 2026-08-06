@@ -1,4 +1,5 @@
 import { OPAQUE_TOKEN_PATTERN } from "../auth/client.js";
+import { CredentialStoreError } from "../auth/credentials.js";
 import type {
   AuthApiClient,
   CredentialStore,
@@ -9,7 +10,10 @@ import type { PrivacyLaunchCredential } from "../engine/launch.js";
 export type PrivacyCredentialErrorCode =
   "GOAT_PRIVACY_LOGIN_REQUIRED" | "GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE";
 
-const activeRefresh = new WeakMap<AuthApiClient, Promise<unknown>>();
+const activeRefresh = new WeakMap<
+  AuthApiClient,
+  Map<string, Promise<unknown>>
+>();
 
 export class PrivacyCredentialError extends Error {
   readonly code: PrivacyCredentialErrorCode;
@@ -49,7 +53,14 @@ export async function preparePrivacyCredential(
   let current: GoatCredentials | null;
   try {
     current = await options.store.get();
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof CredentialStoreError &&
+      (error.code === "GOAT_CREDENTIAL_MIGRATION_FAILED" ||
+        error.code === "GOAT_CREDENTIALS_INVALID")
+    ) {
+      throw new PrivacyCredentialError("GOAT_PRIVACY_LOGIN_REQUIRED");
+    }
     throw new PrivacyCredentialError("GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE");
   }
   if (!current) {
@@ -113,7 +124,10 @@ async function refreshWithMutex(
   client: AuthApiClient,
   refreshToken: string,
 ): Promise<import("../auth/types.js").PollResult> {
-  const pending = activeRefresh.get(client);
+  const locks =
+    activeRefresh.get(client) ?? new Map<string, Promise<unknown>>();
+  activeRefresh.set(client, locks);
+  const pending = locks.get(refreshToken);
   if (pending) {
     const result = (await pending.catch(() => undefined)) as
       import("../auth/types.js").PollResult | undefined;
@@ -125,11 +139,12 @@ async function refreshWithMutex(
     status: "network_error" as const,
     message: "Unable to refresh GOAT privacy credential.",
   }));
-  activeRefresh.set(client, operation);
+  locks.set(refreshToken, operation);
   try {
     return await operation;
   } finally {
-    activeRefresh.delete(client);
+    if (locks.get(refreshToken) === operation) locks.delete(refreshToken);
+    if (locks.size === 0) activeRefresh.delete(client);
   }
 }
 

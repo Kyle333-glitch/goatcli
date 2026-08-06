@@ -26,7 +26,10 @@ import {
   getParentExitSignal,
   getPlatformAdapter,
   type ProcessTerminatorCommand,
+  type ProcessGroupTerminator,
 } from "../platform.js";
+import { createWindowsJobContainment } from "./process-containment.js";
+import { createMacOsProcessContainment } from "./macos-process-containment.js";
 import {
   openLauncherIpcSession,
   type CredentialStoreStatus,
@@ -58,6 +61,7 @@ export type SpawnEngine = (
     stdio: EngineStdio;
     shell: false;
     windowsHide: boolean;
+    detached: boolean;
   },
 ) => ChildProcess;
 
@@ -77,6 +81,7 @@ export interface ProcessLike {
 export type PrivacyIpcMode = "none" | "lazy" | "preview" | "authenticated";
 
 export interface PrivacyLaunchCredential {
+  /** Caller-owned input; launch copies and zeroizes only its private IPC copy. */
   readonly accessToken: Uint8Array;
   readonly expiresAtUnixMs: number;
 }
@@ -101,6 +106,7 @@ export interface LaunchEngineOptions
   spawnEngine?: SpawnEngine;
   processLike?: ProcessLike;
   processTerminator?: ProcessTerminatorCommand;
+  processGroupTerminator?: ProcessGroupTerminator;
   resolvedEngine?: ResolvedEngine;
   privacyCredential?: PrivacyLaunchCredential;
   installedUpdatePolicy?: ActivationSecurityPolicy;
@@ -210,6 +216,10 @@ export async function launchEngine(
           architecture: installed.active.activation.record.architecture,
           developmentOverride: false,
         };
+        enforceInstalledEngineTrustPolicy(
+          installed.active.candidate.manifest,
+          options.trustPolicy,
+        );
         engineIntegrity = "verified";
         expectedExecutableChecksum =
           installed.active.candidate.manifest.checksum.value;
@@ -234,7 +244,7 @@ export async function launchEngine(
     const validated = validateEngine(
       options.resolvedEngine,
       options.launcherVersion,
-      { fs: options.fs },
+      { fs: options.fs, trustPolicy: options.trustPolicy },
     );
     resolved = validated.resolved;
     if (!resolved.developmentOverride) {
@@ -254,36 +264,74 @@ export async function launchEngine(
     options.env ?? processLike.env,
     resolved.platform,
   );
-  await verifyExecutableAtLaunch(
+  const executableHandle = await verifyExecutableAtLaunch(
     resolved.executablePath,
     resolved.developmentOverride ? undefined : expectedExecutableChecksum,
   );
 
-  return launchValidatedEngine(resolved, options.args, {
-    cwd,
-    environment: engineEnvironment,
-    spawnEngine: options.spawnEngine,
-    processLike,
-    processTerminator: options.processTerminator,
-    privacyIpc:
-      privacyMode === "none"
-        ? undefined
-        : {
-            mode: privacyMode === "lazy" ? "lazy" : "eager",
-            engineIntegrity,
-            credentialStore:
-              privacyMode === "preview"
-                ? "not_checked"
-                : privacyMode === "lazy"
-                  ? "unavailable"
-                  : "available",
-            credential: options.privacyCredential?.accessToken,
-            credentialExpiresAtUnixMs:
-              options.privacyCredential?.expiresAtUnixMs,
-            credentialProvider: options.privacyCredentialProvider,
-            launcherPid: processLike.pid,
-          },
-  });
+  // Keep the verified descriptor open through spawn and process lifetime. On
+  // Windows this prevents replacement/deletion while the executable is being
+  // handed to CreateProcess; on POSIX it narrows the pathname race to the
+  // unavoidable limitation that Node's spawn API accepts a pathname rather
+  // than an executable descriptor.
+  try {
+    return await launchValidatedEngine(resolved, options.args, {
+      cwd,
+      environment: engineEnvironment,
+      spawnEngine: options.spawnEngine,
+      processLike,
+      processTerminator: options.processTerminator,
+      processGroupTerminator: options.processGroupTerminator,
+      verifiedExecutable: executableHandle,
+      privacyIpc:
+        privacyMode === "none"
+          ? undefined
+          : {
+              mode: privacyMode === "lazy" ? "lazy" : "eager",
+              engineIntegrity,
+              credentialStore:
+                privacyMode === "preview"
+                  ? "not_checked"
+                  : privacyMode === "lazy"
+                    ? "unavailable"
+                    : "available",
+              credential: options.privacyCredential?.accessToken,
+              credentialExpiresAtUnixMs:
+                options.privacyCredential?.expiresAtUnixMs,
+              credentialProvider: options.privacyCredentialProvider,
+              launcherPid: processLike.pid,
+            },
+    });
+  } finally {
+    await executableHandle?.close().catch(() => undefined);
+  }
+}
+
+// Installed v0.4 activation is still gated by the activation policy: receipt,
+// compatibility, artifact/archive, code-signing, and rollback checks remain
+// mandatory. A caller-supplied legacy manifest trustPolicy is an additional,
+// authoritative allowlist for the v2 candidate's release digest and key ID;
+// it cannot weaken activation policy, and its v1 manifestVersion is not compared
+// with the v2 bundle schema version.
+function enforceInstalledEngineTrustPolicy(
+  manifest: {
+    readonly releasePolicyDigest: string;
+    readonly signature: { readonly keyId: string; readonly status: "signed" };
+  },
+  trustPolicy: ValidateEngineOptions["trustPolicy"] | undefined,
+): void {
+  if (!trustPolicy) return;
+  if (
+    manifest.releasePolicyDigest !== trustPolicy.releasePolicyDigest ||
+    manifest.signature.status !== "signed" ||
+    !trustPolicy.engineManifestKeyIds.includes(manifest.signature.keyId)
+  ) {
+    throw new EngineContractError(
+      "GOAT_ENGINE_SIGNATURE_INVALID",
+      "The installed GOAT engine is not trusted by the active launcher policy.",
+      "Run `goat update`.",
+    );
+  }
 }
 
 function resolveLegacyEngine(
@@ -306,6 +354,7 @@ function resolveLegacyEngine(
   );
   const validated = validateEngine(resolved, options.launcherVersion, {
     fs: options.fs,
+    trustPolicy: options.trustPolicy,
   });
   return {
     resolved: validated.resolved,
@@ -314,7 +363,7 @@ function resolveLegacyEngine(
   };
 }
 
-export function launchValidatedEngine(
+export async function launchValidatedEngine(
   engine: Pick<ValidatedEngine["resolved"], "executablePath" | "platform">,
   args: readonly string[],
   options: {
@@ -323,25 +372,90 @@ export function launchValidatedEngine(
     spawnEngine?: SpawnEngine;
     processLike?: ProcessLike;
     processTerminator?: ProcessTerminatorCommand;
+    processGroupTerminator?: ProcessGroupTerminator;
     privacyIpc?: PrivacyIpcLaunchOptions;
+    /** Held from checksum verification until spawn returns. */
+    verifiedExecutable?: FileHandle;
   },
 ): Promise<EngineLaunchResult> {
   const processLike = options.processLike ?? process;
   const spawnEngine = options.spawnEngine ?? spawn;
   const platform = getPlatformAdapter(engine.platform);
+  let containment:
+    | {
+        bind?(processGroupId: number): void;
+        release(): Promise<void>;
+        terminate(): void;
+      }
+    | undefined;
+  const useNativeContainment = processLike === process && spawnEngine === spawn;
+  if (useNativeContainment) {
+    try {
+      containment =
+        engine.platform === "win32"
+          ? await createWindowsJobContainment({
+              launcherPid: processLike.pid,
+              environment: processLike.env,
+            })
+          : await createMacOsProcessContainment({
+              runtimeExecutable: process.execPath,
+            });
+    } catch {
+      throw new EngineContractError(
+        "GOAT_ENGINE_SPAWN_FAILED",
+        "The GOAT engine could not be contained safely.",
+        "Run `goat doctor`.",
+      );
+    }
+  }
+
   const stdio: EngineStdio = options.privacyIpc
     ? ["inherit", "inherit", "inherit", "pipe", "pipe"]
     : "inherit";
-  const child = spawnEngine(engine.executablePath, [...args], {
-    cwd: options.cwd,
-    env: createEngineEnvironment(
-      options.environment ?? processLike.env,
-      engine.platform,
-    ),
-    stdio,
-    shell: false,
-    windowsHide: true,
-  });
+  let child: ChildProcess;
+  try {
+    child = spawnEngine(engine.executablePath, [...args], {
+      cwd: options.cwd,
+      env: createEngineEnvironment(
+        options.environment ?? processLike.env,
+        engine.platform,
+      ),
+      stdio,
+      shell: false,
+      windowsHide: true,
+      // A detached Windows process is its own console process group, so a
+      // forwarded SIGINT targets the engine instead of rebroadcasting through
+      // the launcher's shared console. The Job Object still owns the full
+      // descendant tree for fail-safe cleanup.
+      detached: engine.platform === "darwin" || engine.platform === "win32",
+    });
+  } catch {
+    await containment?.release().catch(() => undefined);
+    throw new EngineContractError(
+      "GOAT_ENGINE_SPAWN_FAILED",
+      "The GOAT engine could not be started.",
+      "Run `goat doctor`.",
+    );
+  }
+  if (containment?.bind) {
+    try {
+      if (!Number.isSafeInteger(child.pid) || (child.pid ?? 0) <= 0) {
+        throw new Error("missing process group");
+      }
+      containment.bind(child.pid!);
+    } catch {
+      platform.terminateProcess(child, platform.getParentExitSignal(), {
+        runCommand: options.processTerminator,
+        killGroup: options.processGroupTerminator,
+      });
+      containment.terminate();
+      throw new EngineContractError(
+        "GOAT_ENGINE_SPAWN_FAILED",
+        "The GOAT engine could not be contained safely.",
+        "Run `goat doctor`.",
+      );
+    }
+  }
 
   let settled = false;
   let ipcSession: LauncherIpcSession | undefined;
@@ -361,15 +475,34 @@ export function launchValidatedEngine(
     closePendingTransport?.();
     closePendingTransport = undefined;
   };
+  const releaseContainment = async (): Promise<void> => {
+    await containment?.release();
+  };
 
   const terminateChild = (signal: NodeJS.Signals): void => {
     platform.terminateProcess(child, signal, {
       runCommand: options.processTerminator,
+      killGroup: options.processGroupTerminator,
     });
   };
 
   const forwardSignal = (signal: NodeJS.Signals): (() => void) => {
-    return () => terminateChild(signal);
+    return () => {
+      // Console interrupts on Windows can be consumed by Node before a
+      // process-tree signal reaches the detached engine. The Job Object owns
+      // the launcher and its descendants, so close it directly for the
+      // user-interrupt signals; closing the guard is the only reliable
+      // fail-safe on this path.
+      if (
+        engine.platform === "win32" &&
+        containment &&
+        (signal === "SIGINT" || signal === "SIGBREAK")
+      ) {
+        containment.terminate();
+        return;
+      }
+      terminateChild(signal);
+    };
   };
 
   for (const signal of platform.getForwardedSignals()) {
@@ -379,6 +512,7 @@ export function launchValidatedEngine(
   }
 
   const exitListener = (): void => {
+    containment?.terminate();
     terminateChild(platform.getParentExitSignal());
   };
   processLike.on("exit", exitListener);
@@ -391,6 +525,12 @@ export function launchValidatedEngine(
       terminateChild(platform.getParentExitSignal());
       reject(error);
     };
+    const containmentError = (): EngineContractError =>
+      new EngineContractError(
+        "GOAT_ENGINE_SPAWN_FAILED",
+        "The GOAT engine process tree did not close safely.",
+        "Run `goat doctor`.",
+      );
 
     child.once("error", () => {
       fail(
@@ -400,16 +540,27 @@ export function launchValidatedEngine(
           "Run `goat doctor`.",
         ),
       );
+      void releaseContainment().catch(() => undefined);
     });
 
     child.once("exit", (code, signal) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve({
+      if (engine.platform === "darwin") {
+        terminateChild(platform.getParentExitSignal());
+      }
+      const result = {
         exitCode: typeof code === "number" ? code : 1,
         signal: signal ?? null,
-      });
+      };
+      if (settled) {
+        void releaseContainment().catch(() => undefined);
+        return;
+      }
+      settled = true;
+      cleanup();
+      void releaseContainment().then(
+        () => resolve(result),
+        () => reject(containmentError()),
+      );
     });
 
     const privacyIpc = options.privacyIpc;
@@ -424,7 +575,7 @@ export function launchValidatedEngine(
       }
       const transport = childPipeTransport(child);
       closePendingTransport = () => transport.close?.();
-      let providedCredential: PrivacyLaunchCredential | undefined;
+      let providerCredentialCopy: Uint8Array | undefined;
       let credential = privacyIpc.credential;
       let credentialExpiresAtUnixMs = privacyIpc.credentialExpiresAtUnixMs;
       let credentialStore = privacyIpc.credentialStore;
@@ -433,9 +584,10 @@ export function launchValidatedEngine(
           transport,
           signal: ipcLifetime.signal,
         });
-        providedCredential = await privacyIpc.credentialProvider?.();
+        const providedCredential = await privacyIpc.credentialProvider?.();
         validateProvidedPrivacyCredential(providedCredential);
-        credential = providedCredential?.accessToken;
+        providerCredentialCopy = providedCredential?.accessToken.slice();
+        credential = providerCredentialCopy;
         credentialExpiresAtUnixMs = providedCredential?.expiresAtUnixMs;
         credentialStore = providedCredential ? "available" : "unavailable";
       }
@@ -455,7 +607,7 @@ export function launchValidatedEngine(
         closePendingTransport = undefined;
       } finally {
         zeroizeLauncherIpcBytes(credentialCopy);
-        zeroizeLauncherIpcBytes(providedCredential?.accessToken);
+        zeroizeLauncherIpcBytes(providerCredentialCopy);
       }
     })().catch(() => {
       if (privacyIpc.mode === "lazy") {
@@ -500,7 +652,7 @@ export function getPrivacyIpcMode(args: readonly string[]): PrivacyIpcMode {
   ) {
     return "authenticated";
   }
-  return "lazy";
+  return "none";
 }
 
 export function createEngineEnvironment(
@@ -550,7 +702,7 @@ export function getLauncherExitSignal(
 async function verifyExecutableAtLaunch(
   executablePath: string,
   expectedSha256?: string,
-): Promise<void> {
+): Promise<FileHandle | undefined> {
   const OPEN_READ_NOFOLLOW =
     constants.O_RDONLY |
     (typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0);
@@ -562,7 +714,7 @@ async function verifyExecutableAtLaunch(
     // If the executable does not exist, the subsequent spawn will fail with a
     // clearer error. We only perform the symlink/replacement check when the
     // path resolves to an existing file.
-    if (code === "ENOENT") return;
+    if (code === "ENOENT") return undefined;
     throw new EngineContractError(
       "GOAT_ENGINE_SPAWN_FAILED",
       "The GOAT engine executable could not be opened for launch.",
@@ -588,9 +740,11 @@ async function verifyExecutableAtLaunch(
         );
       }
     }
-  } finally {
-    await handle.close();
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
   }
+  return handle;
 }
 
 async function hashFileHandle(handle: FileHandle): Promise<string> {
@@ -659,7 +813,6 @@ function validateProvidedPrivacyCredential(
     !Number.isSafeInteger(credential.expiresAtUnixMs) ||
     credential.expiresAtUnixMs <= Date.now()
   ) {
-    zeroizeLauncherIpcBytes(credential.accessToken);
     throw new EngineContractError(
       "GOAT_PRIVACY_AUTH_REQUIRED",
       "GOAT privacy authentication is required.",

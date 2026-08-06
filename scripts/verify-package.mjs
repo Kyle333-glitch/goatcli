@@ -7,6 +7,52 @@ const pkg = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
 );
 const failures = [];
+const reportPath = readReportPath(process.argv.slice(2), failures);
+
+function readReportPath(args, failures) {
+  const reportIndex = args.indexOf("--report");
+  if (reportIndex === -1) return undefined;
+  const report = args[reportIndex + 1];
+  if (!report || report.startsWith("--")) {
+    failures.push("--report requires an output path");
+    return undefined;
+  }
+  if (
+    args.some(
+      (argument, index) =>
+        index !== reportIndex &&
+        index !== reportIndex + 1 &&
+        argument.startsWith("--"),
+    )
+  ) {
+    failures.push("unsupported verify-package option");
+  }
+  return report;
+}
+
+function writeReport(reportPath, failures) {
+  if (!reportPath) return;
+  try {
+    fs.writeFileSync(
+      path.resolve(root, reportPath),
+      `${JSON.stringify(
+        {
+          passed: failures.length === 0,
+          package: { name: pkg.name, version: pkg.version },
+          failures,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+  } catch (error) {
+    console.error(
+      `package verification: could not write report: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    failures.push("could not write verification report");
+  }
+}
 
 if (pkg.name !== "goatcli") failures.push("package name must be goatcli");
 if (pkg.version !== "0.4.0") failures.push("package version must be 0.4.0");
@@ -34,18 +80,20 @@ if (!notice.includes("not covered by this MIT license")) {
 }
 
 const npmCli = process.env.npm_execpath;
-if (!npmCli) failures.push("npm executable path is unavailable");
-const packed = npmCli
-  ? spawnSync(
-      process.execPath,
-      [npmCli, "pack", "--dry-run", "--json", "--ignore-scripts"],
-      {
-        cwd: root,
-        encoding: "utf8",
-        windowsHide: true,
-      },
-    )
-  : { status: null, stdout: "" };
+const packCommand = npmCli
+  ? {
+      command: process.execPath,
+      args: [npmCli, "pack", "--dry-run", "--json", "--ignore-scripts"],
+    }
+  : {
+      command: process.platform === "win32" ? "npm.cmd" : "npm",
+      args: ["pack", "--dry-run", "--json", "--ignore-scripts"],
+    };
+const packed = spawnSync(packCommand.command, packCommand.args, {
+  cwd: root,
+  encoding: "utf8",
+  windowsHide: true,
+});
 if (packed.status !== 0) {
   failures.push("npm pack --dry-run failed");
 } else {
@@ -216,6 +264,8 @@ function containsBinaryPayload(raw) {
     return true;
   }
 }
+
+writeReport(reportPath, failures);
 
 if (failures.length) {
   failures.forEach((failure) =>
