@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { runCli } from "../cli.js";
 import { runLogin } from "./login.js";
 import { runLogout } from "./logout.js";
-import { runUsage } from "./usage.js";
+import { formatUsageSummary, runUsage } from "./usage.js";
 import type {
   AuthApiClient,
   CredentialStore,
@@ -78,6 +78,173 @@ test("goat login stores credentials only in the injected keyring store", async (
   assert.equal(exitCode, undefined);
 });
 
+test("goat login enrolls a per-device attestation credential best-effort", async () => {
+  const store = new MemoryStore();
+  const DEVICE_SECRET = "S".repeat(43);
+  const provisioned: Array<{ accessToken: string; deviceId: string; label: string }> = [];
+  let stderr = "";
+  let exitCode: number | undefined;
+  await runCli({
+    argv: ["login"],
+    authClient: client({
+      async createDeviceSession() {
+        return {
+          verificationUrl: "http://127.0.0.1:4040/auth/device",
+          userCode: "ABCD-EFGH",
+          deviceCode: "D".repeat(43),
+          intervalSeconds: 2,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          expiresInSeconds: 60,
+        };
+      },
+      async pollDeviceToken() {
+        return { status: "authorized", credentials: CREDENTIALS };
+      },
+      async provisionDeviceCredential(accessToken, deviceId, label) {
+        provisioned.push({ accessToken, deviceId, label: label ?? "" });
+        return { deviceId, deviceSecret: DEVICE_SECRET };
+      },
+    }),
+    credentialStore: store,
+    browserOpener: {
+      async open() {
+        return true;
+      },
+    },
+    stdout: {
+      write() {
+        return true;
+      },
+    },
+    stderr: {
+      write(value) {
+        stderr += value;
+        return true;
+      },
+    },
+    exit(code) {
+      exitCode = code;
+    },
+  });
+
+  assert.equal(provisioned.length, 1);
+  assert.equal(provisioned[0]!.accessToken, CREDENTIALS.accessToken);
+  assert.equal(provisioned[0]!.label, "goatcli");
+  // The CLI generates a fresh device id per enrollment; it must round-trip
+  // into the keyring together with the server-issued secret.
+  assert.match(provisioned[0]!.deviceId, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(store.value, {
+    ...CREDENTIALS,
+    deviceId: provisioned[0]!.deviceId,
+    deviceSecret: DEVICE_SECRET,
+  });
+  assert.equal(stderr, "");
+  assert.equal(exitCode, undefined);
+});
+
+test("goat login succeeds when device attestation provisioning fails", async () => {
+  const store = new MemoryStore();
+  let provisioningCalls = 0;
+  let stderr = "";
+  let exitCode: number | undefined;
+  await runCli({
+    argv: ["login"],
+    authClient: client({
+      async createDeviceSession() {
+        return {
+          verificationUrl: "http://127.0.0.1:4040/auth/device",
+          userCode: "ABCD-EFGH",
+          deviceCode: "D".repeat(43),
+          intervalSeconds: 2,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          expiresInSeconds: 60,
+        };
+      },
+      async pollDeviceToken() {
+        return { status: "authorized", credentials: CREDENTIALS };
+      },
+      async provisionDeviceCredential() {
+        provisioningCalls += 1;
+        throw new Error("PATH_SECRET_3HT6");
+      },
+    }),
+    credentialStore: store,
+    browserOpener: {
+      async open() {
+        return true;
+      },
+    },
+    stdout: {
+      write() {
+        return true;
+      },
+    },
+    stderr: {
+      write(value) {
+        stderr += value;
+        return true;
+      },
+    },
+    exit(code) {
+      exitCode = code;
+    },
+  });
+
+  assert.equal(provisioningCalls, 1);
+  assert.deepEqual(store.value, CREDENTIALS);
+  assert.equal(stderr.includes("PATH_SECRET_3HT6"), false);
+  assert.equal(exitCode, undefined);
+});
+
+test("goat login opens a verification URL with the user code pre-filled", async () => {
+  const opened: string[] = [];
+  let exitCode: number | undefined;
+  await runCli({
+    argv: ["login"],
+    authClient: client({
+      async createDeviceSession() {
+        return {
+          verificationUrl: "http://127.0.0.1:4040/auth/device",
+          userCode: "ABCD-EFGH",
+          deviceCode: "D".repeat(43),
+          intervalSeconds: 2,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          expiresInSeconds: 60,
+        };
+      },
+      async pollDeviceToken() {
+        return { status: "authorized", credentials: CREDENTIALS };
+      },
+    }),
+    credentialStore: new MemoryStore(),
+    browserOpener: {
+      async open(url) {
+        opened.push(url);
+        return true;
+      },
+    },
+    stdout: {
+      write() {
+        return true;
+      },
+    },
+    stderr: {
+      write() {
+        return true;
+      },
+    },
+    exit(code) {
+      exitCode = code;
+    },
+  });
+
+  assert.equal(opened.length, 1);
+  const url = new URL(opened[0]!);
+  assert.equal(url.pathname, "/auth/device");
+  assert.equal(url.searchParams.get("code"), "ABCD-EFGH");
+  assert.equal(exitCode, undefined);
+});
+
 test("login storage, logout revoke, and launcher failures never print exception canaries", async () => {
   let stderr = "";
   await runCli({
@@ -135,6 +302,16 @@ test("login storage, logout revoke, and launcher failures never print exception 
   assert.equal(store.value, null);
 });
 
+test("human usage output is percentage-only", async () => {
+  const output = formatUsageSummary(usageSummary());
+  assert.match(output, /GOAT usage — 99% remaining/);
+  assert.match(output, /Used: 0%/);
+  assert.match(output, /Committed: 0%/);
+  assert.equal(output.includes("microusd"), false);
+  assert.equal(output.includes("Tier"), false);
+  assert.equal(output.includes("reset"), false);
+});
+
 test("usage human and JSON output contain no account PII fields", async () => {
   const summary = usageSummary();
   for (const json of [false, true]) {
@@ -167,6 +344,10 @@ test("usage human and JSON output contain no account PII fields", async () => {
     assert.equal(stdout.includes("displayName"), false);
     assert.equal(stdout.includes("email"), false);
     assert.equal(stdout.includes("requestId"), false);
+    assert.equal(stdout.includes("Microusd"), false);
+    assert.equal(stdout.includes("microusd"), false);
+    assert.equal(stdout.includes("regular"), false);
+    assert.equal(stdout.includes("premium"), false);
   }
 });
 
@@ -300,41 +481,18 @@ function usageSummary(): UsageSummaryResponse {
   return {
     version: "v0.3.2",
     generatedAt: "2026-07-17T12:00:00.000Z",
-    account: { tier: "regular", status: "active" },
+    account: { status: "active" },
     quota: {
-      allowanceMicrousd: "100000000",
-      usedMicrousd: "1000",
-      activeReservedMicrousd: "0",
-      totalCommittedMicrousd: "1000",
-      remainingMicrousd: "99999000",
+      usedPercent: 0,
+      committedPercent: 0,
+      remainingPercent: 99,
       lowQuota: false,
-      lowQuotaThresholdPercent: 20,
     },
     window: {
-      seconds: 3600,
+      kind: "rolling",
+      seconds: 86400,
       startedAt: "2026-07-17T12:00:00.000Z",
-      nextResetAt: "2026-07-17T13:00:00.000Z",
+      nextUsageExpiresAt: "2026-07-18T12:00:00.000Z",
     },
-    usage: {
-      regularMicrousd: "1000",
-      premiumMicrousd: "0",
-      totalMicrousd: "1000",
-    },
-    recent: [
-      {
-        label: "24h",
-        windowSeconds: 86400,
-        regularMicrousd: "1000",
-        premiumMicrousd: "0",
-        totalMicrousd: "1000",
-      },
-      {
-        label: "7d",
-        windowSeconds: 604800,
-        regularMicrousd: "1000",
-        premiumMicrousd: "0",
-        totalMicrousd: "1000",
-      },
-    ],
   };
 }

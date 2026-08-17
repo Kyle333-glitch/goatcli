@@ -4,6 +4,14 @@ export interface GoatCredentials {
   tokenType: "Bearer";
   accessTokenExpiresAt: string;
   refreshTokenExpiresAt: string;
+  /** Per-device attestation enrollment (v0.5.2). Optional for older stores. */
+  deviceId?: string;
+  deviceSecret?: string;
+}
+
+export interface DeviceCredential {
+  deviceId: string;
+  deviceSecret: string;
 }
 
 export interface DeviceSessionResponse {
@@ -31,40 +39,25 @@ export type PollResult =
       message: string;
     };
 
-export type UsageTier = "free" | "regular" | "premium" | "none";
 export type UsageAccountStatus =
   "active" | "no_entitlement" | "quota_suspended" | "quota_revoked";
 
 export interface UsageAccountSummary {
-  tier: UsageTier;
   status: UsageAccountStatus;
 }
 
 export interface UsageQuotaSummary {
-  allowanceMicrousd: string | null;
-  usedMicrousd: string;
-  activeReservedMicrousd: string;
-  totalCommittedMicrousd: string;
-  remainingMicrousd: string | null;
+  usedPercent: number | null;
+  committedPercent: number | null;
+  remainingPercent: number | null;
   lowQuota: boolean;
-  lowQuotaThresholdPercent: number;
 }
 
 export interface UsageWindowSummary {
+  kind: "rolling";
   seconds: number | null;
   startedAt: string | null;
-  nextResetAt: string | null;
-}
-
-export interface UsageAmountBreakdown {
-  regularMicrousd: string;
-  premiumMicrousd: string;
-  totalMicrousd: string;
-}
-
-export interface UsageRecentTotal extends UsageAmountBreakdown {
-  label: "24h" | "7d";
-  windowSeconds: number;
+  nextUsageExpiresAt: string | null;
 }
 
 export interface UsageSummaryResponse {
@@ -73,8 +66,6 @@ export interface UsageSummaryResponse {
   account: UsageAccountSummary;
   quota: UsageQuotaSummary;
   window: UsageWindowSummary;
-  usage: UsageAmountBreakdown;
-  recent: UsageRecentTotal[];
 }
 
 export type UsageSummaryResult =
@@ -95,6 +86,16 @@ export interface AuthApiClient {
   refresh(refreshToken: string): Promise<PollResult>;
   revoke(refreshToken: string): Promise<void>;
   getUsageSummary(accessToken: string): Promise<UsageSummaryResult>;
+  /**
+   * Enroll (or rotate) a per-device attestation secret. Best-effort: callers
+   * treat a missing implementation or failure as "no attestation" rather than
+   * a login failure.
+   */
+  provisionDeviceCredential?(
+    accessToken: string,
+    deviceId: string,
+    label?: string,
+  ): Promise<DeviceCredential>;
 }
 
 export interface CredentialStore {

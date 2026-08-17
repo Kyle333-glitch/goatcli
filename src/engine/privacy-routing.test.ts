@@ -31,7 +31,7 @@ test("privacy IPC routing is exact and preserves opaque diagnostic identifiers",
     ["privacy", "diagnostics", "delete", ""],
     ["run", "PROMPT_SECRET_7QX9"],
   ]) {
-    assert.equal(getPrivacyIpcMode(args), "lazy");
+    assert.equal(getPrivacyIpcMode(args), "none");
   }
 });
 

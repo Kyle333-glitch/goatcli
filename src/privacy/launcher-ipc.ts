@@ -11,7 +11,10 @@ export const LAUNCHER_IPC_SECRET_BYTES = 32;
 export const LAUNCHER_IPC_TAG_BYTES = 32;
 export const LAUNCHER_IPC_HEADER_MAX_BYTES = 2_048;
 export const LAUNCHER_IPC_CREDENTIAL_BYTES = 43;
+export const LAUNCHER_IPC_ATTESTATION_MAX_BYTES = 128;
 export const LAUNCHER_IPC_FRAME_MAX_BYTES = 4_096;
+const LAUNCHER_IPC_ATTESTATION_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[A-Za-z0-9_-]{43}$/;
 export const LAUNCHER_IPC_TIMEOUT_MS = 2_000;
 export const LAUNCHER_IPC_MAX_FRAMES = 256;
 
@@ -59,6 +62,8 @@ export interface OpenLauncherIpcSessionOptions {
   readonly enginePid: number;
   readonly credential?: Uint8Array;
   readonly credentialExpiresAtUnixMs?: number;
+  /** `<deviceId>:<deviceSecret>` blob carried in the session_start frame. */
+  readonly attestation?: Uint8Array;
   readonly signal?: AbortSignal;
   readonly now?: () => number;
   readonly monotonicNow?: () => number;
@@ -98,6 +103,8 @@ type StartRequest = CommonRequest & {
   readonly credential_store: CredentialStoreStatus;
   readonly credential_length: 0 | 43;
   readonly credential_expires_at_unix_ms?: number;
+  /** Present only when the launcher enrolled a per-device attestation. */
+  readonly attestation_length?: number;
 };
 
 type ContinuationRequest = CommonRequest & {
@@ -163,6 +170,7 @@ export async function openLauncherIpcSession(
   if (options.credential && options.credentialStore !== "available") {
     throw new LauncherIpcError("LAUNCHER_IPC_CREDENTIAL_INVALID");
   }
+  validateAttestation(options.attestation);
 
   const secret = consumeRandom(randomBytes, LAUNCHER_IPC_SECRET_BYTES);
   const sessionId = randomIdentifier("gsi_", randomBytes);
@@ -212,6 +220,9 @@ export async function openLauncherIpcSession(
     ...(options.credentialExpiresAtUnixMs === undefined
       ? {}
       : { credential_expires_at_unix_ms: options.credentialExpiresAtUnixMs }),
+    ...(options.attestation && options.attestation.byteLength > 0
+      ? { attestation_length: options.attestation.byteLength }
+      : {}),
   };
 
   try {
@@ -232,6 +243,7 @@ export async function openLauncherIpcSession(
           options.credential,
           secret,
           signal,
+          options.attestation,
         );
         await expectAcknowledgement(queue, secret, sessionId, 0, signal);
       },
@@ -348,8 +360,9 @@ async function sendRequest(
   credential: Uint8Array | undefined,
   secret: Uint8Array,
   signal: AbortSignal,
+  attestation?: Uint8Array,
 ): Promise<void> {
-  const frame = encodeRequest(request, credential, secret);
+  const frame = encodeRequest(request, credential, secret, attestation);
   try {
     await writeTransport(transport, frame, signal);
   } finally {
@@ -361,9 +374,18 @@ function encodeRequest(
   request: Request,
   credential: Uint8Array | undefined,
   secret: Uint8Array,
+  attestation?: Uint8Array,
 ): Uint8Array {
   const credentialBytes = credential ?? EMPTY_CREDENTIAL;
   if (request.credential_length !== credentialBytes.byteLength) {
+    throw new LauncherIpcError("LAUNCHER_IPC_CREDENTIAL_INVALID");
+  }
+  const attestationBytes = attestation ?? EMPTY_CREDENTIAL;
+  const declaredAttestationLength =
+    request.message_type === "session_start"
+      ? (request as StartRequest).attestation_length ?? 0
+      : 0;
+  if (declaredAttestationLength !== attestationBytes.byteLength) {
     throw new LauncherIpcError("LAUNCHER_IPC_CREDENTIAL_INVALID");
   }
 
@@ -380,7 +402,12 @@ function encodeRequest(
   const prefixView = new DataView(prefix.buffer);
   prefixView.setUint32(0, header.byteLength, false);
   prefixView.setUint16(4, credentialBytes.byteLength, false);
-  const authenticated = joinBytes(prefix, header, credentialBytes);
+  const authenticated = joinBytes(
+    prefix,
+    header,
+    credentialBytes,
+    attestationBytes,
+  );
   const tag = calculateTag(REQUEST_HMAC_DOMAIN, secret, authenticated);
   const frame = joinBytes(authenticated, tag);
   prefix.fill(0);
@@ -392,6 +419,26 @@ function encodeRequest(
     throw new LauncherIpcError("LAUNCHER_IPC_FRAME_TOO_LARGE");
   }
   return frame;
+}
+
+function validateAttestation(attestation: Uint8Array | undefined): void {
+  if (attestation === undefined) return;
+  if (
+    !(attestation instanceof Uint8Array) ||
+    attestation.byteLength < 1 ||
+    attestation.byteLength > LAUNCHER_IPC_ATTESTATION_MAX_BYTES
+  ) {
+    throw new LauncherIpcError("LAUNCHER_IPC_CREDENTIAL_INVALID");
+  }
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(attestation);
+  } catch {
+    throw new LauncherIpcError("LAUNCHER_IPC_CREDENTIAL_INVALID");
+  }
+  if (!LAUNCHER_IPC_ATTESTATION_PATTERN.test(text)) {
+    throw new LauncherIpcError("LAUNCHER_IPC_CREDENTIAL_INVALID");
+  }
 }
 
 async function expectAcknowledgement(

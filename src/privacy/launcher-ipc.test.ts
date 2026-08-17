@@ -129,6 +129,42 @@ test("sends credential update, clear, and end with ordered ACKs", async () => {
   transport.writeReferences.forEach(assertZeroed);
 });
 
+test("carries the per-device attestation blob in the session_start frame", async () => {
+  const transport = new EngineHarness();
+  const deviceId = "123e4567-e89b-12d3-a456-426614174000";
+  const deviceSecret = new TextEncoder().encode("Z".repeat(43));
+  const attestation = new TextEncoder().encode(`${deviceId}:${new TextDecoder().decode(deviceSecret)}`);
+  const session = await openLauncherIpcSession({
+    ...baseOptions(transport),
+    attestation,
+  });
+
+  const request = decodeRequest(transport.writes[1]!);
+  assert.equal(request.header.attestation_length, attestation.byteLength);
+  assert.deepEqual(request.attestation, attestation);
+  session.dispose();
+  transport.writeReferences.forEach(assertZeroed);
+});
+
+test("rejects malformed attestation blobs before writing any frame", async () => {
+  const badAttestations = [
+    new TextEncoder().encode("not-a-uuid:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+    new TextEncoder().encode("123e4567-e89b-12d3-a456-426614174000"),
+    new TextEncoder().encode("123e4567-e89b-12d3-a456-426614174000:not-a-secret"),
+    new TextEncoder().encode(
+      `123e4567-e89b-12d3-a456-426614174000:${'A'.repeat(92)}`,
+    ),
+  ];
+  for (const attestation of badAttestations) {
+    const transport = new EngineHarness();
+    await assert.rejects(
+      () => openLauncherIpcSession({ ...baseOptions(transport), attestation }),
+      hasCode("LAUNCHER_IPC_CREDENTIAL_INVALID"),
+    );
+    assert.equal(transport.writes.length, 0);
+  }
+});
+
 test("omits optional credential fields for unauthenticated diagnostic preview", async () => {
   const transport = new EngineHarness();
   const session = await openLauncherIpcSession({
@@ -289,6 +325,97 @@ test("fixed launcher frames never contain privacy canaries", async () => {
   session.dispose();
 });
 
+test("maps transport write failures to a fixed code without exposing secrets", async () => {
+  const transport = new RejectingWriteTransport();
+  await assert.rejects(
+    () => openLauncherIpcSession({ ...baseOptions(transport) }),
+    (error) => {
+      assert.ok(error instanceof LauncherIpcError);
+      assert.equal(error.code, "LAUNCHER_IPC_WRITE_FAILED");
+      const rendered = JSON.stringify({
+        message: error.message,
+        code: error.code,
+      });
+      assert.equal(rendered.includes("TOKEN_SECRET_8MVP"), false);
+      assert.equal(rendered.includes("SOURCE_CODE_SECRET_4JK2"), false);
+      return true;
+    },
+  );
+  assert.equal(transport.closed, true);
+});
+
+test("never zeroizes the caller-owned credential buffer", async () => {
+  const callerCredential = Uint8Array.from(CREDENTIAL);
+  const transport = new EngineHarness();
+  const session = await openLauncherIpcSession({
+    ...baseOptions(transport),
+    credential: callerCredential,
+  });
+  await session.end();
+
+  assert.deepEqual(callerCredential, CREDENTIAL);
+  transport.writeReferences.forEach(assertZeroed);
+});
+
+test("error diagnostics never contain credential or secret bytes", async () => {
+  const canaries = [
+    new TextDecoder().decode(CREDENTIAL),
+    "PROMPT_SECRET_7QX9",
+    "TOKEN_SECRET_8MVP",
+    "PATH_SECRET_3HT6",
+  ];
+  const tampered = new EngineHarness({ tamperResponse: true });
+  await assert.rejects(
+    () => openLauncherIpcSession(baseOptions(tampered)),
+    (error) => {
+      const rendered = JSON.stringify({
+        message: error instanceof Error ? error.message : String(error),
+        code: error instanceof LauncherIpcError ? error.code : "unknown",
+      });
+      for (const canary of canaries) {
+        assert.equal(rendered.includes(canary), false);
+      }
+      return true;
+    },
+  );
+
+  const timeoutTransport = new EngineHarness({ suppressResponses: true });
+  await assert.rejects(
+    () =>
+      openLauncherIpcSession({
+        ...baseOptions(timeoutTransport),
+        timeoutMs: 5,
+        monotonicNow: () => performance.now(),
+      }),
+    (error) => {
+      const rendered = JSON.stringify({
+        message: error instanceof Error ? error.message : String(error),
+        code: error instanceof LauncherIpcError ? error.code : "unknown",
+      });
+      for (const canary of canaries) {
+        assert.equal(rendered.includes(canary), false);
+      }
+      return true;
+    },
+  );
+});
+
+class RejectingWriteTransport implements LauncherIpcTransport {
+  closed = false;
+
+  async write(_bytes: Uint8Array, _signal: AbortSignal): Promise<void> {
+    throw new Error("TOKEN_SECRET_8MVP");
+  }
+
+  read(_signal: AbortSignal): Promise<Uint8Array | null> {
+    return new Promise(() => undefined);
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+}
+
 type Ack = {
   protocol_version: 1;
   message_type: "session_ack";
@@ -411,6 +538,7 @@ function baseOptions(transport: LauncherIpcTransport) {
 function decodeRequest(frame: Uint8Array): {
   header: { [key: string]: unknown };
   credential: Uint8Array;
+  attestation: Uint8Array;
 } {
   const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
   const headerLength = view.getUint32(0, false);
@@ -418,12 +546,15 @@ function decodeRequest(frame: Uint8Array): {
   const header = JSON.parse(
     new TextDecoder().decode(frame.subarray(6, 6 + headerLength)),
   ) as { [key: string]: unknown };
+  const attestationLength =
+    header.message_type === "session_start"
+      ? (header.attestation_length as number | undefined) ?? 0
+      : 0;
+  const credentialEnd = 6 + headerLength + credentialLength;
   return {
     header,
-    credential: frame.slice(
-      6 + headerLength,
-      6 + headerLength + credentialLength,
-    ),
+    credential: frame.slice(6 + headerLength, credentialEnd),
+    attestation: frame.slice(credentialEnd, credentialEnd + attestationLength),
   };
 }
 

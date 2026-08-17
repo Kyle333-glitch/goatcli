@@ -14,7 +14,7 @@ The launcher discovers, verifies, and launches a separately installed GOAT engin
 Install the public launcher with:
 
 ```shell
-npm install --global goatcli
+npm install -g goatcli
 ```
 
 Then run:

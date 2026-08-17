@@ -73,7 +73,7 @@ Update success, failure, and integrity-check results produce no launcher telemet
 
 The active credential store is the operating-system keyring: Windows Credential Manager or macOS Keychain, under service `goatcli` and account `goat-auth`. The stored object has exactly five fields: `accessToken`, `refreshToken`, `tokenType`, `accessTokenExpiresAt`, and `refreshTokenExpiresAt`. Both tokens must be 43-character base64url values and `tokenType` must be `Bearer`.
 
-There is no plaintext credential fallback. A valid legacy `auth.json` may be migrated once only after a keyring write and readback match. Successful migration removes the legacy file and stale temporary files. If migration cannot be verified, the launcher leaves the original file for recovery, does not authenticate from it, and returns a fixed re-login instruction without its path.
+There is no plaintext credential fallback. A legacy `auth.json` is never read or auto-migrated: without keyring credentials it fails closed with a fixed re-login instruction. After a verified keyring write (or on logout), a verified regular legacy file and its matching stale temporary files are removed.
 
 If a newly issued or rotated credential cannot be verified in the keyring, the launcher does not use it. It best-effort revokes the new refresh token, clears ambiguous local credential state, and returns a fixed error without transport or keyring details.
 
@@ -83,7 +83,7 @@ Binary discovery, package inspection, engine manifest parsing, compatibility che
 
 ## Launcher self-update
 
-The v0.4.0 launcher owns verified engine updates through `goat update` as described in [README.md](./README.md). The launcher does not self-update (update itself); `goat update` updates the GOAT engine, not the `goatcli` npm package. The npm package is updated through the standard npm installation flow (`npm install --global goatcli`).
+The v0.4.0 launcher owns verified engine updates through `goat update` as described in [README.md](./README.md). The launcher does not self-update (update itself); `goat update` updates the GOAT engine, not the `goatcli` npm package. The npm package is updated through the standard npm installation flow (`npm install -g goatcli`).
 
 `goat upgrade` and other unrecognized commands are forwarded to the verified local engine, along with the working directory, inherited environment, and terminal streams. The launcher strips only its fixed routing keys (`GOAT_CONTROL_PLANE_URL`, `GOAT_ENGINE_PATH`, `GOAT_DEV_ENGINE_PATH`, and `GOATCLI_DEV`). It does not buffer child output or include any child input in a launcher request.
 

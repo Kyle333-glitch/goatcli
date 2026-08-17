@@ -213,6 +213,7 @@ const approvedRoutePaths = [
   "/v1/auth/device/sessions",
   "/v1/auth/device/token",
   "/v1/auth/device/cancel",
+  "/v1/auth/device/credentials",
   "/v1/auth/tokens/refresh",
   "/v1/auth/tokens/revoke",
   "/v1/usage/summary",
@@ -222,7 +223,7 @@ const declaredRoutePaths = [
 ].map((match) => match[1]);
 if (JSON.stringify(declaredRoutePaths) !== JSON.stringify(approvedRoutePaths)) {
   failures.push(
-    `auth client routes must be exactly the six approved operations (found ${declaredRoutePaths.join(", ")})`,
+    `auth client routes must be exactly the approved operations (found ${declaredRoutePaths.join(", ")})`,
   );
 }
 for (const field of [...approvedRoutePaths, "GOAT-auth/1", "GOAT-usage/1"])

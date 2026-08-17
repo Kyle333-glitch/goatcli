@@ -11,12 +11,9 @@ import type {
   GoatCredentials,
   PollResult,
   UsageAccountStatus,
-  UsageAmountBreakdown,
   UsageQuotaSummary,
-  UsageRecentTotal,
   UsageSummaryResponse,
   UsageSummaryResult,
-  UsageTier,
   UsageWindowSummary,
 } from "./types.js";
 
@@ -25,17 +22,19 @@ export const OPAQUE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_RESPONSE_BYTES = 16 * 1024;
 const USER_CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/;
-const AMOUNT_PATTERN = /^\d{1,20}$/;
 const JSON_CONTENT_TYPE_PATTERN = /^application\/json(?:\s*;|$)/i;
 
 const AUTH_USER_AGENT = "GOAT-auth/1";
 const USAGE_USER_AGENT = "GOAT-usage/1";
 const DEVICE_AUTH_PATH = "/auth/device";
+const DEVICE_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const ROUTES = {
   createDeviceSession: "/v1/auth/device/sessions",
   pollDeviceToken: "/v1/auth/device/token",
   cancelDeviceSession: "/v1/auth/device/cancel",
+  deviceCredentials: "/v1/auth/device/credentials",
   refresh: "/v1/auth/tokens/refresh",
   revoke: "/v1/auth/tokens/revoke",
   usage: "/v1/usage/summary",
@@ -177,6 +176,32 @@ export function createAuthApiClient(baseUrl: URL): AuthApiClient {
       }
     },
 
+    async provisionDeviceCredential(accessToken, deviceId, label) {
+      if (!isOpaqueToken(accessToken) || !DEVICE_ID_PATTERN.test(deviceId)) {
+        throw new ControlPlaneClientError("invalid_auth_data");
+      }
+      const response = await performEssentialRequest(origin, {
+        kind: "provision_device",
+        accessToken,
+        deviceId,
+        ...(label === undefined ? {} : { label }),
+      });
+      const body = parseJsonBody(response);
+      if (response.statusCode !== 200) {
+        throw new ControlPlaneClientError("unexpected_response");
+      }
+      const value = exactObject(body, ["deviceId", "deviceSecret"]);
+      if (
+        !value ||
+        value.deviceId !== deviceId ||
+        typeof value.deviceSecret !== "string" ||
+        !isOpaqueToken(value.deviceSecret)
+      ) {
+        throw new ControlPlaneClientError("unexpected_response");
+      }
+      return { deviceId: value.deviceId, deviceSecret: value.deviceSecret };
+    },
+
     async getUsageSummary(accessToken) {
       if (!isOpaqueToken(accessToken)) {
         return {
@@ -223,7 +248,13 @@ type EssentialOperation =
   | { kind: "cancel_device_session"; deviceCode: string }
   | { kind: "refresh"; refreshToken: string }
   | { kind: "revoke"; refreshToken: string }
-  | { kind: "usage"; accessToken: string };
+  | { kind: "usage"; accessToken: string }
+  | {
+      kind: "provision_device";
+      accessToken: string;
+      deviceId: string;
+      label?: string;
+    };
 
 interface EssentialResponse {
   statusCode: number;
@@ -277,6 +308,20 @@ function performEssentialRequest(
         undefined,
         operation.accessToken,
       );
+    case "provision_device":
+      return sendRequest(
+        origin,
+        "POST",
+        ROUTES.deviceCredentials,
+        AUTH_USER_AGENT,
+        {
+          deviceId: operation.deviceId,
+          ...(operation.label === undefined
+            ? {}
+            : { label: operation.label }),
+        },
+        operation.accessToken,
+      );
   }
 }
 
@@ -285,7 +330,10 @@ function sendRequest(
   method: "GET" | "POST",
   path: (typeof ROUTES)[keyof typeof ROUTES],
   userAgent: typeof AUTH_USER_AGENT | typeof USAGE_USER_AGENT,
-  jsonBody?: { deviceCode: string } | { refreshToken: string },
+  jsonBody?:
+    | { deviceCode: string }
+    | { refreshToken: string }
+    | { deviceId: string; label?: string },
   accessToken?: string,
 ): Promise<EssentialResponse> {
   const body =
@@ -618,8 +666,6 @@ function parseUsageSummary(body: unknown): UsageSummaryResponse | null {
     "account",
     "quota",
     "window",
-    "usage",
-    "recent",
   ]);
   if (
     !value ||
@@ -629,133 +675,71 @@ function parseUsageSummary(body: unknown): UsageSummaryResponse | null {
     return null;
   }
 
-  const account = exactObject(value.account, ["tier", "status"]);
+  const account = exactObject(value.account, ["status"]);
   if (!account) return null;
-  if (!isUsageTier(account.tier) || !isUsageAccountStatus(account.status))
-    return null;
+  if (!isUsageAccountStatus(account.status)) return null;
 
   const quota = parseUsageQuota(value.quota);
   const window = parseUsageWindow(value.window);
-  const usage = parseUsageBreakdown(value.usage);
-  const recent = parseUsageRecent(value.recent);
-  if (!quota || !window || !usage || !recent) return null;
+  if (!quota || !window) return null;
 
   return {
     version: "v0.3.2",
     generatedAt: value.generatedAt,
-    account: { tier: account.tier, status: account.status },
+    account: { status: account.status },
     quota,
     window,
-    usage,
-    recent,
   };
 }
 
 function parseUsageQuota(input: unknown): UsageQuotaSummary | null {
   const value = exactObject(input, [
-    "allowanceMicrousd",
-    "usedMicrousd",
-    "activeReservedMicrousd",
-    "totalCommittedMicrousd",
-    "remainingMicrousd",
+    "usedPercent",
+    "committedPercent",
+    "remainingPercent",
     "lowQuota",
-    "lowQuotaThresholdPercent",
   ]);
   if (
     !value ||
-    !isAmountOrNull(value.allowanceMicrousd) ||
-    !isAmount(value.usedMicrousd) ||
-    !isAmount(value.activeReservedMicrousd) ||
-    !isAmount(value.totalCommittedMicrousd) ||
-    !isAmountOrNull(value.remainingMicrousd) ||
-    typeof value.lowQuota !== "boolean" ||
-    !isIntegerInRange(value.lowQuotaThresholdPercent, 0, 100)
+    !isIntegerInRangeOrNull(value.usedPercent, 0, 100) ||
+    !isIntegerInRangeOrNull(value.committedPercent, 0, 100) ||
+    !isIntegerInRangeOrNull(value.remainingPercent, 0, 100) ||
+    typeof value.lowQuota !== "boolean"
   ) {
     return null;
   }
   return {
-    allowanceMicrousd: value.allowanceMicrousd,
-    usedMicrousd: value.usedMicrousd,
-    activeReservedMicrousd: value.activeReservedMicrousd,
-    totalCommittedMicrousd: value.totalCommittedMicrousd,
-    remainingMicrousd: value.remainingMicrousd,
+    usedPercent: value.usedPercent,
+    committedPercent: value.committedPercent,
+    remainingPercent: value.remainingPercent,
     lowQuota: value.lowQuota,
-    lowQuotaThresholdPercent: value.lowQuotaThresholdPercent,
   };
 }
 
 function parseUsageWindow(input: unknown): UsageWindowSummary | null {
-  const value = exactObject(input, ["seconds", "startedAt", "nextResetAt"]);
+  const value = exactObject(input, [
+    "kind",
+    "seconds",
+    "startedAt",
+    "nextUsageExpiresAt",
+  ]);
   if (
     !value ||
+    value.kind !== "rolling" ||
     !(
       value.seconds === null || isIntegerInRange(value.seconds, 1, 31_536_000)
     ) ||
     !isIsoDateOrNull(value.startedAt) ||
-    !isIsoDateOrNull(value.nextResetAt)
+    !isIsoDateOrNull(value.nextUsageExpiresAt)
   ) {
     return null;
   }
   return {
+    kind: "rolling",
     seconds: value.seconds,
     startedAt: value.startedAt,
-    nextResetAt: value.nextResetAt,
+    nextUsageExpiresAt: value.nextUsageExpiresAt,
   };
-}
-
-function parseUsageBreakdown(input: unknown): UsageAmountBreakdown | null {
-  const value = exactObject(input, [
-    "regularMicrousd",
-    "premiumMicrousd",
-    "totalMicrousd",
-  ]);
-  if (
-    !value ||
-    !isAmount(value.regularMicrousd) ||
-    !isAmount(value.premiumMicrousd) ||
-    !isAmount(value.totalMicrousd)
-  )
-    return null;
-  return {
-    regularMicrousd: value.regularMicrousd,
-    premiumMicrousd: value.premiumMicrousd,
-    totalMicrousd: value.totalMicrousd,
-  };
-}
-
-function parseUsageRecent(input: unknown): UsageRecentTotal[] | null {
-  if (!Array.isArray(input) || input.length !== 2) return null;
-  const parsed = input.map((item) => {
-    const value = exactObject(item, [
-      "label",
-      "windowSeconds",
-      "regularMicrousd",
-      "premiumMicrousd",
-      "totalMicrousd",
-    ]);
-    if (
-      !value ||
-      (value.label !== "24h" && value.label !== "7d") ||
-      !isAmount(value.regularMicrousd) ||
-      !isAmount(value.premiumMicrousd) ||
-      !isAmount(value.totalMicrousd)
-    ) {
-      return null;
-    }
-    const expectedSeconds = value.label === "24h" ? 86_400 : 604_800;
-    if (value.windowSeconds !== expectedSeconds) return null;
-    return {
-      label: value.label,
-      windowSeconds: expectedSeconds,
-      regularMicrousd: value.regularMicrousd,
-      premiumMicrousd: value.premiumMicrousd,
-      totalMicrousd: value.totalMicrousd,
-    } satisfies UsageRecentTotal;
-  });
-  if (parsed.some((item) => item === null)) return null;
-  const day = parsed.find((item) => item?.label === "24h");
-  const week = parsed.find((item) => item?.label === "7d");
-  return day && week ? [day, week] : null;
 }
 
 function isUsageError(body: unknown, expectedCode?: string): boolean {
@@ -832,15 +816,6 @@ function objectValue(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function isUsageTier(value: unknown): value is UsageTier {
-  return (
-    value === "free" ||
-    value === "regular" ||
-    value === "premium" ||
-    value === "none"
-  );
-}
-
 function isUsageAccountStatus(value: unknown): value is UsageAccountStatus {
   return (
     value === "active" ||
@@ -879,6 +854,14 @@ function isIntegerInRange(
   );
 }
 
+function isIntegerInRangeOrNull(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): value is number | null {
+  return value === null || isIntegerInRange(value, minimum, maximum);
+}
+
 function isBoundedStringOrNull(
   value: unknown,
   maximum: number,
@@ -893,14 +876,6 @@ function isBoundedStringOrUndefined(value: unknown, maximum: number): boolean {
     value === undefined ||
     (typeof value === "string" && value.length <= maximum)
   );
-}
-
-function isAmount(value: unknown): value is string {
-  return typeof value === "string" && AMOUNT_PATTERN.test(value);
-}
-
-function isAmountOrNull(value: unknown): value is string | null {
-  return value === null || isAmount(value);
 }
 
 function parseRetryAfter(value: string | undefined): number {

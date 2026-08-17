@@ -96,8 +96,20 @@ export async function preparePrivacyCredential(
     throw new PrivacyCredentialError("GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE");
   }
 
+  // A rotated credential set keeps the previously enrolled device attestation:
+  // the device secret is independent of the access token and remains valid
+  // until explicitly revoked. The control plane refresh response only carries
+  // base credentials, so carry the device fields over or the next inference
+  // request silently loses its attestation (and would fail when attestation
+  // is required).
+  const refreshedCredentials = {
+    ...refreshed.credentials,
+    ...(current.deviceId && current.deviceSecret
+      ? { deviceId: current.deviceId, deviceSecret: current.deviceSecret }
+      : {}),
+  };
   try {
-    await options.store.set(refreshed.credentials);
+    await options.store.set(refreshedCredentials);
   } catch {
     await discardUnstoredCredential(
       options.client,
@@ -106,7 +118,7 @@ export async function preparePrivacyCredential(
     );
     throw new PrivacyCredentialError("GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE");
   }
-  return encodeCredential(refreshed.credentials);
+  return encodeCredential(refreshedCredentials);
 }
 
 async function refreshWithMutex(
@@ -196,7 +208,25 @@ function encodeCredential(
     accessToken.fill(0);
     throw new PrivacyCredentialError("GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE");
   }
-  return { accessToken, expiresAtUnixMs };
+  const deviceSecret =
+    credentials.deviceId && credentials.deviceSecret
+      ? new TextEncoder().encode(credentials.deviceSecret)
+      : undefined;
+  if (
+    deviceSecret &&
+    (deviceSecret.byteLength !== 43 ||
+      !/^[A-Za-z0-9_-]{43}$/.test(credentials.deviceSecret!))
+  ) {
+    deviceSecret.fill(0);
+    throw new PrivacyCredentialError("GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE");
+  }
+  return {
+    accessToken,
+    expiresAtUnixMs,
+    ...(credentials.deviceId && deviceSecret
+      ? { deviceId: credentials.deviceId, deviceSecret }
+      : {}),
+  };
 }
 
 async function deleteInvalidCredentials(store: CredentialStore): Promise<void> {

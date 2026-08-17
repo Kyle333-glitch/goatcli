@@ -154,7 +154,7 @@ export async function runCli(options: CliOptions = {}): Promise<void> {
     } catch (error) {
       if (error instanceof LauncherUpdateRequiredError) {
         stderr.write(
-          `${formatUpdateError(error)}\nNext step: npm install --global goatcli@${error.minimumLauncherVersion}\n`,
+          `${formatUpdateError(error)}\nNext step: npm install -g goatcli@${error.minimumLauncherVersion}\n`,
         );
       } else if (error instanceof UpdateError) {
         stderr.write(`${formatUpdateError(error)}\n`);

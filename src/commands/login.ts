@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   AuthApiClient,
   BrowserOpener,
@@ -25,14 +26,16 @@ export async function runLogin(options: LoginOptions): Promise<number> {
       new Promise<void>((resolve) => setTimeout(resolve, ms)),
   };
   const session = await options.client.createDeviceSession();
-  const opened = await options.opener.open(session.verificationUrl);
+  const verificationUrl = prefilledVerificationUrl(
+    session.verificationUrl,
+    session.userCode,
+  );
+  const opened = await options.opener.open(verificationUrl);
 
   options.stdout.write(`GOAT login\n`);
   if (!opened)
-    options.stdout.write(
-      `Open this URL in your browser: ${session.verificationUrl}\n`,
-    );
-  else options.stdout.write(`Opened browser URL: ${session.verificationUrl}\n`);
+    options.stdout.write(`Open this URL in your browser: ${verificationUrl}\n`);
+  else options.stdout.write(`Opened browser URL: ${verificationUrl}\n`);
   options.stdout.write(`Enter code: ${session.userCode}\n`);
 
   let intervalSeconds = clampInterval(session.intervalSeconds);
@@ -76,6 +79,20 @@ export async function runLogin(options: LoginOptions): Promise<number> {
   return 1;
 }
 
+/**
+ * Append the user code to the verification URL so the browser can pre-fill
+ * the code input. The code is already displayed to the user, so carrying it in
+ * the URL adds no secrecy loss and removes a manual entry step.
+ */
+function prefilledVerificationUrl(
+  verificationUrl: string,
+  userCode: string,
+): string {
+  const url = new URL(verificationUrl);
+  url.searchParams.set("code", userCode);
+  return url.toString();
+}
+
 function clampInterval(seconds: number): number {
   if (!Number.isFinite(seconds) || seconds <= 0)
     return MIN_POLL_INTERVAL_SECONDS;
@@ -106,6 +123,19 @@ async function handlePollResult(
         "GOAT could not save credentials in the OS credential store. Run `goat login` again.\n",
       );
       return { done: true, exitCode: 1 };
+    }
+    // Best-effort per-device attestation enrollment. A failure must not fail
+    // login: the control plane falls back to the User-Agent heuristic until
+    // client attestation is required.
+    try {
+      const provisioned = await options.client.provisionDeviceCredential?.(
+        result.credentials.accessToken,
+        randomUUID(),
+        "goatcli",
+      );
+      await options.store.set({ ...result.credentials, ...provisioned });
+    } catch {
+      // Attestation remains optional; the stored base credentials are valid.
     }
     options.stdout.write("GOAT login complete.\n");
     return { done: true, exitCode: 0 };

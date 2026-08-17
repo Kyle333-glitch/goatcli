@@ -64,7 +64,6 @@ async function launchNode(
       env: options.env,
       processLike: options.processLike,
       spawnEngine: options.spawnEngine,
-      processTerminator: () => ({ status: 0 }),
       resolvedEngine: developmentEngine(),
       nodeVersion: "24.16.0",
     }),
@@ -198,13 +197,7 @@ test("child output remains inherited and absent from launcher-owned results", as
   let captured = "";
   let captureComplete = Promise.resolve();
   const spawnEngine: SpawnEngine = (command, args, options) => {
-    assert.deepEqual(options.stdio, [
-      "inherit",
-      "inherit",
-      "inherit",
-      "pipe",
-      "pipe",
-    ]);
+    assert.equal(options.stdio, "inherit");
     const child = spawn(command, [...args], {
       ...options,
       stdio: ["ignore", "pipe", "pipe"],

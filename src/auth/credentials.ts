@@ -19,7 +19,7 @@ const CREDENTIAL_KEYS = [
   "accessTokenExpiresAt",
   "refreshTokenExpiresAt",
 ] as const;
-const LEGACY_CREDENTIAL_MAX_BYTES = 4 * 1024;
+const OPTIONAL_CREDENTIAL_KEYS = ["deviceId", "deviceSecret"] as const;
 
 export type CredentialStoreErrorCode =
   | "GOAT_CREDENTIAL_STORE_UNAVAILABLE"
@@ -82,35 +82,19 @@ export function createCredentialStore(
     return parsed;
   }
 
-  async function migrateLegacy(): Promise<GoatCredentials | null> {
-    const raw = await readLegacyFile(legacyPath);
-    if (raw === null) {
-      await cleanupStaleTemps(legacyPath, platform);
-      return null;
-    }
-    const credentials = parseCredentials(raw);
-    if (!credentials)
-      throw new CredentialStoreError("GOAT_CREDENTIALS_INVALID");
-    try {
-      await keyring.setPassword(SERVICE, ACCOUNT, JSON.stringify(credentials));
-      const verified = await readKeyring();
-      if (!verified || !sameCredentials(credentials, verified)) {
-        throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-      }
-    } catch (error) {
-      if (error instanceof CredentialStoreError) throw error;
-      throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-    }
-
-    await cleanupLegacy(legacyPath, platform);
-    return credentials;
-  }
-
   return {
     async get() {
       const credentials = await readKeyring();
-      if (!credentials) return migrateLegacy();
-      await cleanupLegacy(legacyPath, platform).catch(() => undefined);
+      if (!credentials) {
+        if (await legacyCredentialPathExists(legacyPath)) {
+          throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
+        }
+        return null;
+      }
+      // The keyring is authoritative. A legacy plaintext file is now stale and
+      // must not remain at rest, so remove it best-effort once real
+      // credentials exist.
+      await cleanupLegacy(legacyPath, platform);
       return credentials;
     },
     async set(credentials) {
@@ -127,16 +111,15 @@ export function createCredentialStore(
         if (error instanceof CredentialStoreError) throw error;
         throw new CredentialStoreError("GOAT_CREDENTIAL_STORE_UNAVAILABLE");
       }
-      await cleanupLegacy(legacyPath, platform).catch(() => undefined);
+      await cleanupLegacy(legacyPath, platform);
     },
     async delete() {
-      // Remove plaintext first so a failed cleanup cannot be silently remigrated.
-      await cleanupLegacy(legacyPath, platform);
       try {
         await keyring.deletePassword(SERVICE, ACCOUNT);
       } catch {
         throw new CredentialStoreError("GOAT_CREDENTIAL_STORE_UNAVAILABLE");
       }
+      await cleanupLegacy(legacyPath, platform);
     },
   };
 }
@@ -163,8 +146,17 @@ export async function refreshStoredCredentials(
     }
     return null;
   }
+  // A rotated credential set keeps the previously enrolled device attestation:
+  // the control plane refresh response only carries base credentials, so carry
+  // the device fields over or inference requests silently lose attestation.
+  const refreshed = {
+    ...result.credentials,
+    ...(current.deviceId && current.deviceSecret
+      ? { deviceId: current.deviceId, deviceSecret: current.deviceSecret }
+      : {}),
+  };
   try {
-    await store.set(result.credentials);
+    await store.set(refreshed);
   } catch (error) {
     await discardUnstoredCredential(
       client,
@@ -174,7 +166,7 @@ export async function refreshStoredCredentials(
     if (error instanceof CredentialStoreError) throw error;
     throw new CredentialStoreError("GOAT_CREDENTIAL_STORE_UNAVAILABLE");
   }
-  return result.credentials;
+  return refreshed;
 }
 
 async function discardUnstoredCredential(
@@ -203,17 +195,19 @@ export function parseCredentials(raw: string): GoatCredentials | null {
 }
 
 function reconstructCredentials(value: unknown): GoatCredentials | null {
-  if (!isExactObject(value, CREDENTIAL_KEYS)) return null;
+  if (!isObjectWithKeys(value, CREDENTIAL_KEYS, OPTIONAL_CREDENTIAL_KEYS))
+    return null;
   if (
     !isToken(value.accessToken) ||
     !isToken(value.refreshToken) ||
-    value.tokenType !== "Bearer"
-  )
-    return null;
-  if (
+    value.tokenType !== "Bearer" ||
     !isTimestamp(value.accessTokenExpiresAt) ||
     !isTimestamp(value.refreshTokenExpiresAt)
   )
+    return null;
+  if (value.deviceId !== undefined && typeof value.deviceId !== "string")
+    return null;
+  if (value.deviceSecret !== undefined && !isToken(value.deviceSecret))
     return null;
   return {
     accessToken: value.accessToken,
@@ -221,20 +215,31 @@ function reconstructCredentials(value: unknown): GoatCredentials | null {
     tokenType: "Bearer",
     accessTokenExpiresAt: value.accessTokenExpiresAt,
     refreshTokenExpiresAt: value.refreshTokenExpiresAt,
+    ...(value.deviceId === undefined ? {} : { deviceId: value.deviceId }),
+    ...(value.deviceSecret === undefined
+      ? {}
+      : { deviceSecret: value.deviceSecret }),
   };
 }
 
-function isExactObject<const T extends readonly string[]>(
+function isObjectWithKeys<
+  const Required extends readonly string[],
+  const Optional extends readonly string[],
+>(
   value: unknown,
-  keys: T,
-): value is Record<T[number], unknown> {
+  required: Required,
+  optional: Optional,
+): value is Record<Required[number] | Optional[number], unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     return false;
-  const actual = Object.keys(value).sort((a, b) => a.localeCompare(b));
-  const expected = [...keys].sort((a, b) => a.localeCompare(b));
+  const actual = Object.keys(value);
   return (
-    actual.length === expected.length &&
-    actual.every((key, index) => key === expected[index])
+    actual.every(
+      (key) =>
+        (required as readonly string[]).includes(key) ||
+        (optional as readonly string[]).includes(key),
+    ) &&
+    required.every((key) => Object.prototype.hasOwnProperty.call(value, key))
   );
 }
 
@@ -253,111 +258,58 @@ function sameCredentials(
   left: GoatCredentials,
   right: GoatCredentials,
 ): boolean {
-  return CREDENTIAL_KEYS.every((key) => left[key] === right[key]);
+  return [...CREDENTIAL_KEYS, ...OPTIONAL_CREDENTIAL_KEYS].every(
+    (key) => left[key] === right[key],
+  );
 }
 
-async function readLegacyFile(path: string): Promise<string | null> {
-  let pathStats: Awaited<ReturnType<typeof fs.lstat>>;
+async function legacyCredentialPathExists(path: string): Promise<boolean> {
   try {
-    pathStats = await fs.lstat(path);
+    await fs.lstat(path);
+    return true;
   } catch (error) {
-    if (isMissing(error)) return null;
+    if (isMissing(error)) return false;
     throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-  }
-  if (!pathStats.isFile()) {
-    throw new CredentialStoreError("GOAT_CREDENTIALS_INVALID");
-  }
-
-  let handle: Awaited<ReturnType<typeof fs.open>>;
-  try {
-    handle = await fs.open(path, "r");
-  } catch (error) {
-    if (isMissing(error)) return null;
-    throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-  }
-
-  const bytes = Buffer.alloc(LEGACY_CREDENTIAL_MAX_BYTES + 1);
-  try {
-    let stats;
-    try {
-      stats = await handle.stat();
-    } catch {
-      throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-    }
-    if (
-      !stats.isFile() ||
-      stats.size < 1 ||
-      stats.size > LEGACY_CREDENTIAL_MAX_BYTES
-    ) {
-      throw new CredentialStoreError("GOAT_CREDENTIALS_INVALID");
-    }
-
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      let bytesRead: number;
-      try {
-        ({ bytesRead } = await handle.read(
-          bytes,
-          offset,
-          bytes.byteLength - offset,
-          null,
-        ));
-      } catch {
-        throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-      }
-      if (bytesRead === 0) break;
-      offset += bytesRead;
-    }
-    if (offset < 1 || offset > LEGACY_CREDENTIAL_MAX_BYTES) {
-      throw new CredentialStoreError("GOAT_CREDENTIALS_INVALID");
-    }
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(
-        bytes.subarray(0, offset),
-      );
-    } catch {
-      throw new CredentialStoreError("GOAT_CREDENTIALS_INVALID");
-    }
-  } finally {
-    bytes.fill(0);
-    // A close failure must not mask a meaningful error raised above.
-    await handle?.close().catch(() => undefined);
   }
 }
 
+/**
+ * Best-effort removal of a stale legacy plaintext credential file and any
+ * matching temporary files left by a prior migration attempt. Never throws:
+ * a file that cannot be removed must not block keyring-backed authentication.
+ *
+ * Only regular files are removed. `lstat` (not `stat`) is used so a symlink at
+ * the credential path is never followed, and directories or other non-regular
+ * entries are left untouched. This prevents a planted symlink or directory
+ * from inducing deletion of an arbitrary path.
+ */
 async function cleanupLegacy(
   path: string,
   platform: NodeJS.Platform,
 ): Promise<void> {
-  try {
-    await fs.rm(path, { force: true });
-  } catch {
-    throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-  }
-  await cleanupStaleTemps(path, platform);
-}
-
-async function cleanupStaleTemps(
-  path: string,
-  platform: NodeJS.Platform,
-): Promise<void> {
+  await removeRegularFileIfPresent(path);
   const pathModule = getPathModule(platform);
   const directory = pathModule.dirname(path);
   const baseName = pathModule.basename(path);
   let entries: string[];
   try {
     entries = await fs.readdir(directory);
-  } catch (error) {
-    if (isMissing(error)) return;
-    throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
+  } catch {
+    return;
   }
   for (const entry of entries) {
     if (!entry.startsWith(`${baseName}.`) || !entry.endsWith(".tmp")) continue;
-    try {
-      await fs.rm(pathModule.join(directory, entry), { force: true });
-    } catch {
-      throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-    }
+    await removeRegularFileIfPresent(pathModule.join(directory, entry));
+  }
+}
+
+async function removeRegularFileIfPresent(path: string): Promise<void> {
+  try {
+    const stats = await fs.lstat(path);
+    if (!stats.isFile()) return;
+    await fs.rm(path, { force: true });
+  } catch {
+    // Best effort: never surface cleanup details or block authentication.
   }
 }
 

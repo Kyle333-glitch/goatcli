@@ -231,7 +231,8 @@ test("engine-local privacy and absent update/download contexts never use launche
     );
     assert.equal(exitCode, 0);
     assert.deepEqual(forwarded, argv);
-    assert.deepEqual(stdio, ["inherit", "inherit", "inherit", "pipe", "pipe"]);
+    // Ordinary engine-local commands must use inherited stdio with no IPC pipes.
+    assert.equal(stdio, "inherit");
   }
 
   let failureExit: number | undefined;
@@ -369,6 +370,196 @@ test("finishWithLaunchResult exits by code or re-signals the launcher", () => {
   assert.deepEqual(exitCodes, [5]);
   assert.deepEqual(signals, ["SIGTERM"]);
 });
+
+test("ordinary commands never load, refresh, or pass credentials to the engine", async () => {
+  const executablePath =
+    "C:\\GOAT\\engines\\stable\\win32-x64\\bin\\goat-engine.exe";
+  const manifestPath = "C:\\GOAT\\engines\\stable\\win32-x64\\goat-engine.json";
+  const engineBytes = Buffer.from("engine");
+  const fakeFs = makeFakeFs({
+    [executablePath]: { content: engineBytes, isFile: true },
+    [manifestPath]: {
+      content: JSON.stringify(makeManifest(sha256(engineBytes))),
+      isFile: true,
+    },
+  });
+  const storeCalls: string[] = [];
+  const clientCalls: string[] = [];
+  const credentialStore = makeSpyCredentialStore(storeCalls);
+  const authClient = makeSpyAuthClient(clientCalls);
+  const argvList: Array<readonly string[]> = [
+    ["run"],
+    ["run", "--flag", "value"],
+    ["run", "privacy", "diagnostics", "submit"],
+    ["privacy"],
+    ["privacy", "status"],
+    ["privacy", "telemetry", "on"],
+    ["privacy", "telemetry", "off"],
+    ["privacy", "telemetry", "reset"],
+    ["download", "C:\\PATH_SECRET_3HT6\\PROMPT_SECRET_7QX9.bin"],
+    ["upgrade"],
+  ];
+
+  for (const argv of argvList) {
+    const child = new FakeChild();
+    let stdio: Parameters<SpawnEngine>[2]["stdio"] | undefined;
+    let spawnedEnv: NodeJS.ProcessEnv | undefined;
+    let exitCode: number | undefined;
+    const spawnEngine: SpawnEngine = (_command, _args, options) => {
+      stdio = options.stdio;
+      spawnedEnv = options.env;
+      queueMicrotask(() => child.emit("exit", 0, null));
+      return child as unknown as ChildProcess;
+    };
+
+    await assert.rejects(
+      () =>
+        runCli({
+          argv,
+          authClient,
+          credentialStore,
+          resolvedEngine: makeResolvedEngine({ executablePath, manifestPath }),
+          fs: fakeFs,
+          spawnEngine,
+          processLike: new FakeProcess("win32", "x64", "D:\\repo"),
+          exit(code?: number): never {
+            exitCode = code;
+            throw new Error("exit");
+          },
+        }),
+      /exit/,
+    );
+
+    assert.equal(exitCode, 0, JSON.stringify(argv));
+    assert.equal(stdio, "inherit", JSON.stringify(argv));
+    assert.equal(
+      Array.isArray(stdio),
+      false,
+      `no IPC pipes for ${JSON.stringify(argv)}`,
+    );
+    const envJson = JSON.stringify(spawnedEnv);
+    assert.equal(
+      envJson.includes("TOKEN_SECRET_8MVP"),
+      false,
+      JSON.stringify(argv),
+    );
+    assert.equal(
+      envJson.includes("REFRESH_SECRET_9DK1"),
+      false,
+      JSON.stringify(argv),
+    );
+  }
+
+  assert.deepEqual(storeCalls, []);
+  assert.deepEqual(clientCalls, []);
+});
+
+test("extra arguments on privacy-looking commands never enable authenticated IPC", async () => {
+  const executablePath =
+    "C:\\GOAT\\engines\\stable\\win32-x64\\bin\\goat-engine.exe";
+  const manifestPath = "C:\\GOAT\\engines\\stable\\win32-x64\\goat-engine.json";
+  const engineBytes = Buffer.from("engine");
+  const fakeFs = makeFakeFs({
+    [executablePath]: { content: engineBytes, isFile: true },
+    [manifestPath]: {
+      content: JSON.stringify(makeManifest(sha256(engineBytes))),
+      isFile: true,
+    },
+  });
+  const storeCalls: string[] = [];
+  const clientCalls: string[] = [];
+  const credentialStore = makeSpyCredentialStore(storeCalls);
+  const authClient = makeSpyAuthClient(clientCalls);
+
+  for (const argv of [
+    ["privacy", "diagnostics", "submit", "extra"],
+    ["privacy", "diagnostics", "submit", "--flag"],
+    ["privacy", "telemetry", "delete-remote", "extra"],
+    ["privacy", "diagnostics", "delete", "id", "extra"],
+    ["privacy", "diagnostics", "delete"],
+    ["privacy", "diagnostics", "delete", ""],
+  ]) {
+    const child = new FakeChild();
+    let stdio: Parameters<SpawnEngine>[2]["stdio"] | undefined;
+    let exitCode: number | undefined;
+    const spawnEngine: SpawnEngine = (_command, _args, options) => {
+      stdio = options.stdio;
+      queueMicrotask(() => child.emit("exit", 0, null));
+      return child as unknown as ChildProcess;
+    };
+
+    await assert.rejects(
+      () =>
+        runCli({
+          argv,
+          authClient,
+          credentialStore,
+          resolvedEngine: makeResolvedEngine({ executablePath, manifestPath }),
+          fs: fakeFs,
+          spawnEngine,
+          processLike: new FakeProcess("win32", "x64", "D:\\repo"),
+          exit(code?: number): never {
+            exitCode = code;
+            throw new Error("exit");
+          },
+        }),
+      /exit/,
+    );
+
+    assert.equal(exitCode, 0, JSON.stringify(argv));
+    assert.equal(stdio, "inherit", JSON.stringify(argv));
+    assert.equal(
+      Array.isArray(stdio),
+      false,
+      `no IPC pipes for ${JSON.stringify(argv)}`,
+    );
+  }
+
+  assert.deepEqual(storeCalls, []);
+  assert.deepEqual(clientCalls, []);
+});
+
+function makeSpyCredentialStore(calls: string[]): CredentialStore {
+  return {
+    async get() {
+      calls.push("get");
+      return null;
+    },
+    async set() {
+      calls.push("set");
+    },
+    async delete() {
+      calls.push("delete");
+    },
+  };
+}
+
+function makeSpyAuthClient(calls: string[]): AuthApiClient {
+  const fail = (name: string) => {
+    calls.push(name);
+    throw new Error("TOKEN_SECRET_8MVP");
+  };
+  return {
+    async createDeviceSession() {
+      return fail("createDeviceSession");
+    },
+    async pollDeviceToken() {
+      return fail("pollDeviceToken");
+    },
+    async cancelDeviceSession() {
+      calls.push("cancelDeviceSession");
+    },
+    async refresh() {
+      return fail("refresh");
+    },
+    async revoke() {
+      calls.push("revoke");
+    },
+    async getUsageSummary() {
+      return fail("getUsageSummary");
+    },
+  };
+}
 
 class FakeChild extends EventEmitter {
   kill(): boolean {
