@@ -54,10 +54,24 @@ export interface UsageQuotaSummary {
 }
 
 export interface UsageWindowSummary {
-  kind: "rolling";
+  kind: "rolling" | "daily";
   seconds: number | null;
   startedAt: string | null;
   nextUsageExpiresAt: string | null;
+}
+
+export interface UsageSessionSummary {
+  kind: "daily";
+  sessionsPerDay: number | null;
+  sessionsRemaining: number | null;
+  usedMinutes: number | null;
+  remainingMinutes: number | null;
+  sessionSeconds: number;
+  roundingMinutes: number;
+  graceMinutes: number;
+  activeSessionId: string | null;
+  activeSessionStartedAt: string | null;
+  activeSessionMinutes: number;
 }
 
 export interface UsageSummaryResponse {
@@ -65,6 +79,7 @@ export interface UsageSummaryResponse {
   generatedAt: string;
   account: UsageAccountSummary;
   quota: UsageQuotaSummary;
+  session?: UsageSessionSummary;
   window: UsageWindowSummary;
 }
 
@@ -86,6 +101,10 @@ export interface AuthApiClient {
   refresh(refreshToken: string): Promise<PollResult>;
   revoke(refreshToken: string): Promise<void>;
   getUsageSummary(accessToken: string): Promise<UsageSummaryResult>;
+  closeUsageSession?(
+    accessToken: string,
+    sessionId: string,
+  ): Promise<{ chargedMinutes: number; sessionsRemaining: number | null }>;
   /**
    * Enroll (or rotate) a per-device attestation secret. Best-effort: callers
    * treat a missing implementation or failure as "no attestation" rather than

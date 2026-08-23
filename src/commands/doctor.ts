@@ -139,7 +139,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<void> {
   const sourceText =
     engineResolution.source === "local-install"
       ? "Local app-data engine install"
-      : "None";
+      : engineResolution.source === "npm-package"
+        ? "Platform engine npm package"
+        : "None";
 
   const KNOWN_CONFIG_FILES = new Set(["config.json", "settings.json"]);
   const cliEntryPath = process.argv[1] || process.execPath;

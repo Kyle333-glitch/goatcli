@@ -47,7 +47,58 @@ if (!engineResult.ok) {
     environment,
   );
   if (!controlPlaneResult.ok) process.exitCode = controlPlaneResult.status;
-  else console.log("GOAT v0.4.1 mocked cross-repository coverage passed.");
+  else if (process.platform === "win32") {
+    const responder = path.join(
+      root,
+      "dist",
+      "native-fixtures",
+      "engine-ipc-responder.exe",
+    );
+    const buildResponderResult = run(
+      bun,
+      root,
+      "engine privacy IPC responder build",
+      [
+        path.join(root, "scripts", "build-windows-privacy-fixture.mjs"),
+        path.join(
+          root,
+          "test",
+          "windows-privacy-spawn",
+          "engine-ipc-responder.mjs",
+        ),
+        responder,
+      ],
+      environment,
+    );
+    if (!buildResponderResult.ok) {
+      process.exitCode = buildResponderResult.status;
+    } else {
+      const nativePrivacyResult = run(
+        process.execPath,
+        root,
+        "native Windows privacy IPC cross-repository coverage",
+        [
+          "--import",
+          "tsx",
+          path.join(
+            root,
+            "test",
+            "windows-privacy-spawn",
+            "cross-repository-launcher.ts",
+          ),
+          responder,
+        ],
+        environment,
+      );
+      if (!nativePrivacyResult.ok) {
+        process.exitCode = nativePrivacyResult.status;
+      } else {
+        console.log("GOAT v0.4.1 mocked cross-repository coverage passed.");
+      }
+    }
+  } else {
+    console.log("GOAT v0.4.1 mocked cross-repository coverage passed.");
+  }
 }
 
 function resolveRequiredRoot(variable, fallback, label) {

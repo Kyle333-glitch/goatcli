@@ -1,0 +1,45 @@
+[package]
+name = "goatcli-windows-spawn"
+version = "0.4.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+description = "Private Windows child-process spawn primitive for GOAT privacy IPC"
+publish = false
+
+[features]
+default = []
+test-hooks = []
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+napi = { version = "3", default-features = false, features = ["napi8"] }
+napi-derive = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Globalization",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Pipes",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+] }
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "deny"

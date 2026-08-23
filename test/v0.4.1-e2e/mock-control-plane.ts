@@ -11,6 +11,7 @@ const ROTATED_REFRESH_TOKEN = "N".repeat(43);
 const EXPIRES_AT = "2030-01-01T00:00:00.000Z";
 const USER_CODE = "ABCD-EFGH";
 const DEVICE_CODE = "D".repeat(43);
+const DEVICE_SECRET = "S".repeat(43);
 const MAX_REQUEST_BYTES = 16 * 1024;
 
 export interface MockControlPlaneRequest {
@@ -22,6 +23,7 @@ export class MockControlPlaneServer {
   readonly requests: MockControlPlaneRequest[] = [];
   validDeviceTokenRequests = 0;
   validRefreshRequests = 0;
+  validDeviceCredentialRequests = 0;
   validInferenceRequests = 0;
   validInferenceBodies = 0;
   private server: Server | undefined;
@@ -194,6 +196,31 @@ export class MockControlPlaneServer {
 
       if (
         request.method === "POST" &&
+        url.pathname === "/v1/auth/device/credentials"
+      ) {
+        const enrollment = parseDeviceEnrollment(requestBody);
+        if (
+          request.headers.authorization !== `Bearer ${ACCESS_TOKEN}` ||
+          !enrollment
+        ) {
+          writeJson(response, 400, {
+            error: {
+              code: "invalid_request",
+              message: "Invalid device enrollment",
+            },
+          });
+          return;
+        }
+        this.validDeviceCredentialRequests += 1;
+        writeJson(response, 200, {
+          deviceId: enrollment.deviceId,
+          deviceSecret: DEVICE_SECRET,
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
         url.pathname === "/v1/inference/stream"
       ) {
         if (request.headers.authorization !== `Bearer ${ACCESS_TOKEN}`) {
@@ -309,6 +336,28 @@ function requestBodyMatches(body: Buffer, expected: string): boolean {
     return body.equals(expectedBytes);
   } finally {
     expectedBytes.fill(0);
+  }
+}
+
+function parseDeviceEnrollment(body: Buffer): { deviceId: string } | null {
+  try {
+    const value = JSON.parse(body.toString("utf8")) as unknown;
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      return null;
+    const record = value as Record<string, unknown>;
+    if (Object.keys(record).sort().join(",") !== "deviceId,label") return null;
+    if (
+      typeof record.deviceId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        record.deviceId,
+      ) ||
+      record.label !== "goatcli"
+    ) {
+      return null;
+    }
+    return { deviceId: record.deviceId };
+  } catch {
+    return null;
   }
 }
 

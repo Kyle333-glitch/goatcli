@@ -217,6 +217,7 @@ const approvedRoutePaths = [
   "/v1/auth/tokens/refresh",
   "/v1/auth/tokens/revoke",
   "/v1/usage/summary",
+  "/v1/usage/session/close",
 ];
 const declaredRoutePaths = [
   ...client.matchAll(/^\s+\w+: "(\/v1\/[^"]+)",$/gm),

@@ -54,6 +54,12 @@ The `User-Agent`, channel, platform, and architecture headers are operational ro
 
 Update metadata and artifacts are accessed only through this fixed-origin transport. No other network path can fetch, download, or inspect update material.
 
+### Native installer channel
+
+The standalone native installer has one additional essential network operation: it downloads the fixed, platform-specific GOAT engine package from `https://registry.npmjs.org`. The URL, package name, engine version, platform, and architecture are compiled into the installer; command-line arguments and environment variables cannot select another origin or package. Windows uses PowerShell's HTTPS request and macOS uses `curl` with a fixed `GOAT-native-installer/<version>` user agent. No cookies, proxy configuration, query string, fragment, credentials, or user data are sent.
+
+The installer extracts only the expected engine executable, package metadata, and manifest. Release binaries embed the approved Ed25519 public key and cryptographically verify the stable manifest signature plus executable SHA-256 before activation and before every launch. Builds without embedded trust material fail closed when an engine is requested. The native installer sends no telemetry, diagnostic data, usage data, credentials, paths, working directories, arguments, or child-process output.
+
 ### What the verified-update channel does not transmit
 
 The verified-update transport never transmits:
@@ -83,7 +89,7 @@ Binary discovery, package inspection, engine manifest parsing, compatibility che
 
 ## Launcher self-update
 
-The v0.4.0 launcher owns verified engine updates through `goat update` as described in [README.md](./README.md). The launcher does not self-update (update itself); `goat update` updates the GOAT engine, not the `goatcli` npm package. The npm package is updated through the standard npm installation flow (`npm install -g goatcli`).
+The v0.4.0 Node launcher owns verified engine updates through `goat update` as described in [README.md](./README.md). The standalone native launcher also owns its local engine bootstrap and can re-install the pinned engine with `goat update`; it does not self-update its own native binary. Native installer binaries are updated through the GitHub release assets. The npm package is updated through the standard npm installation flow (`npm install -g goatcli`).
 
 `goat upgrade` and other unrecognized commands are forwarded to the verified local engine, along with the working directory, inherited environment, and terminal streams. The launcher strips only its fixed routing keys (`GOAT_CONTROL_PLANE_URL`, `GOAT_ENGINE_PATH`, `GOAT_DEV_ENGINE_PATH`, and `GOATCLI_DEV`). It does not buffer child output or include any child input in a launcher request.
 
@@ -108,7 +114,9 @@ The launcher creates a version 1 authenticated anonymous-pipe session only for:
 - `goat privacy diagnostics submit`
 - `goat privacy diagnostics delete <diagnostic-id>`
 
-Descriptors 3 and 4 carry the `GOATIPC1` protocol with a random 32-byte in-memory secret, HMAC-SHA-256 authentication, canonical JSON, a 2 KiB header limit, 4 KiB frame limit, two-second deadline, nonce/sequence/process binding, and exact acknowledgements. Node 24.16.0 is required so Windows uses libuv's explicit inherited-handle allowlist; unrelated descriptors remain closed on macOS.
+Descriptors 3 and 4 carry the `GOATIPC1` protocol with a random 32-byte in-memory secret, HMAC-SHA-256 authentication, canonical JSON, a 2 KiB header limit, 4 KiB frame limit, two-second deadline, nonce/sequence/process binding, and exact acknowledgements. On Windows, every supported Node version uses GOAT's native `STARTUPINFOEX` spawn path. Its child CRT descriptor table contains descriptors 0 through 4, while `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` contains only valid duplicated standard-stream handles and the two child privacy-pipe handles. Standard input, output, and error remain terminal streams and are not IPC transports. The launcher ends and every unrelated handle are non-inheritable. If the matching native package is absent or invalid, a Windows privacy launch fails closed without falling back to Node's ordinary spawn path. On macOS, unrelated descriptors remain closed by the existing spawn path.
+
+The native binding, inherited handle values, IPC secret, and access token are never added to the child argument vector or environment. The two privacy channels are anonymous pipes; the launcher does not replace them with named pipes, sockets, standard streams, or filesystem rendezvous.
 
 The initial frame contains only protocol version, message type, random session and nonce identifiers, sequence, timestamp, launcher and engine process IDs, launcher version, installation channel `npm`, engine integrity (`verified` or `development_unverified`), keyring status, credential length, and optional credential expiry. It carries the exact 43-byte access token only when authentication is required. Diagnostic preview uses no credential. The launcher omits OS session identifiers and launcher diagnostic checks.
 

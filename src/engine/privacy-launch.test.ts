@@ -165,7 +165,10 @@ test("lazy IPC carries provider-attested device enrollment into the start frame"
   assert.deepEqual(result, { exitCode: 0, signal: null });
   assert.equal(observedRequests.length, 1);
   const request = observedRequests[0]!;
-  assert.equal(request.header.attestation_length, expectedAttestation.byteLength);
+  assert.equal(
+    request.header.attestation_length,
+    expectedAttestation.byteLength,
+  );
   assert.deepEqual(request.attestation, expectedAttestation);
 });
 
@@ -586,7 +589,7 @@ function attachEngineResponder(
     ) as { [key: string]: unknown };
     const attestationLength =
       header.message_type === "session_start"
-        ? (header.attestation_length as number | undefined) ?? 0
+        ? ((header.attestation_length as number | undefined) ?? 0)
         : 0;
     const frameLength =
       6 + headerLength + credentialLength + attestationLength + 32;

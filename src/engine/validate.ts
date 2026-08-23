@@ -69,7 +69,7 @@ export function validateEngine(
     throw new EngineContractError(
       "GOAT_ENGINE_MISSING",
       `GOAT engine executable was not found at ${resolved.executablePath}.`,
-      "Install the local GOAT engine or use explicit development dependency injection.",
+      "Reinstall GOAT with `npm install -g goatcli`, then run `goat doctor`.",
     );
   }
 
@@ -132,7 +132,7 @@ export function validateEngine(
     throw new EngineContractError(
       "GOAT_ENGINE_MANIFEST_MISSING",
       `GOAT engine manifest was not found at ${resolved.manifestPath ?? "(none)"}.`,
-      "Reinstall the GOAT engine so goat-engine.json is present beside the engine root.",
+      "Reinstall GOAT with `npm install -g goatcli` so goat-engine.json is restored.",
     );
   }
 

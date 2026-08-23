@@ -17,6 +17,7 @@ export type ApprovedProviderPolicy = {
   readonly publicAlias:
     | "goat/muse-spark-1.2-contributor"
     | "goat/deepseek-v4-flash-0731"
+    | "goat/deepseek-v4-pro-0813"
     | "goat/gpt-5.6-luna"
     | "goat/auto"
     | "goat/fast"
@@ -249,7 +250,7 @@ export function assertLauncherReleasePolicy(input: {
 
 const LAUNCH_MODEL_ALIASES = new Set([
   "goat/muse-spark-1.2-contributor",
-  "goat/deepseek-v4-flash-0731",
+  "goat/deepseek-v4-pro-0813",
   "goat/gpt-5.6-luna",
 ]);
 
@@ -286,6 +287,7 @@ const DIRECT_PROVIDER_ENVIRONMENT_KEYS: Readonly<
 const PUBLIC_MODEL_ALIASES = new Set([
   "goat/muse-spark-1.2-contributor",
   "goat/deepseek-v4-flash-0731",
+  "goat/deepseek-v4-pro-0813",
   "goat/gpt-5.6-luna",
   "goat/auto",
   "goat/fast",

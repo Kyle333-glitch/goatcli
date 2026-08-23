@@ -157,7 +157,10 @@ test("runs mocked login, refresh, quota rejection, and bounded offline behavior"
   assert.equal(loginResult, 0);
   assert.equal(loginError, "");
   assert.equal(loginOutput.includes(current.accessToken), false);
-  assert.ok((await store.get())?.accessToken === current.accessToken);
+  const loggedIn = await store.get();
+  assert.equal(loggedIn?.accessToken, current.accessToken);
+  assert.match(loggedIn?.deviceId ?? "", /^[0-9a-f-]{36}$/);
+  assert.equal(loggedIn?.deviceSecret, "S".repeat(43));
 
   const refreshed = await refreshStoredCredentials(client, store);
   assert.equal(refreshed?.accessToken === current.accessToken, true);
@@ -165,10 +168,12 @@ test("runs mocked login, refresh, quota rejection, and bounded offline behavior"
   assert.deepEqual(server.requests, [
     { method: "POST", path: "/v1/auth/device/sessions" },
     { method: "POST", path: "/v1/auth/device/token" },
+    { method: "POST", path: "/v1/auth/device/credentials" },
     { method: "POST", path: "/v1/auth/tokens/refresh" },
   ]);
   assert.equal(server.validDeviceTokenRequests, 1);
   assert.equal(server.validRefreshRequests, 1);
+  assert.equal(server.validDeviceCredentialRequests, 1);
 
   const quotaResponse = await fetch(`${origin}/v1/inference/stream`, {
     method: "POST",

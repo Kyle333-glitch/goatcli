@@ -90,7 +90,10 @@ test("preserves the enrolled device attestation across an access-token refresh",
   const store = new MemoryStore(expiring);
   const credential = await preparePrivacyCredential({
     store,
-    client: authClient(async () => ({ status: "authorized", credentials: refreshed })),
+    client: authClient(async () => ({
+      status: "authorized",
+      credentials: refreshed,
+    })),
     now: () => NOW,
   });
 
@@ -125,7 +128,10 @@ test("carries the enrolled device attestation into the launch credential", async
   });
 
   assert.equal(credential.deviceId, deviceId);
-  assert.deepEqual(credential.deviceSecret, new TextEncoder().encode(deviceSecret));
+  assert.deepEqual(
+    credential.deviceSecret,
+    new TextEncoder().encode(deviceSecret),
+  );
   credential.accessToken.fill(0);
   credential.deviceSecret!.fill(0);
 });

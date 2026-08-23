@@ -133,7 +133,9 @@ test("carries the per-device attestation blob in the session_start frame", async
   const transport = new EngineHarness();
   const deviceId = "123e4567-e89b-12d3-a456-426614174000";
   const deviceSecret = new TextEncoder().encode("Z".repeat(43));
-  const attestation = new TextEncoder().encode(`${deviceId}:${new TextDecoder().decode(deviceSecret)}`);
+  const attestation = new TextEncoder().encode(
+    `${deviceId}:${new TextDecoder().decode(deviceSecret)}`,
+  );
   const session = await openLauncherIpcSession({
     ...baseOptions(transport),
     attestation,
@@ -148,11 +150,15 @@ test("carries the per-device attestation blob in the session_start frame", async
 
 test("rejects malformed attestation blobs before writing any frame", async () => {
   const badAttestations = [
-    new TextEncoder().encode("not-a-uuid:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
-    new TextEncoder().encode("123e4567-e89b-12d3-a456-426614174000"),
-    new TextEncoder().encode("123e4567-e89b-12d3-a456-426614174000:not-a-secret"),
     new TextEncoder().encode(
-      `123e4567-e89b-12d3-a456-426614174000:${'A'.repeat(92)}`,
+      "not-a-uuid:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    ),
+    new TextEncoder().encode("123e4567-e89b-12d3-a456-426614174000"),
+    new TextEncoder().encode(
+      "123e4567-e89b-12d3-a456-426614174000:not-a-secret",
+    ),
+    new TextEncoder().encode(
+      `123e4567-e89b-12d3-a456-426614174000:${"A".repeat(92)}`,
     ),
   ];
   for (const attestation of badAttestations) {
@@ -548,7 +554,7 @@ function decodeRequest(frame: Uint8Array): {
   ) as { [key: string]: unknown };
   const attestationLength =
     header.message_type === "session_start"
-      ? (header.attestation_length as number | undefined) ?? 0
+      ? ((header.attestation_length as number | undefined) ?? 0)
       : 0;
   const credentialEnd = 6 + headerLength + credentialLength;
   return {

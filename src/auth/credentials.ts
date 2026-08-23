@@ -11,6 +11,8 @@ import type { CredentialStore, GoatCredentials } from "./types.js";
 const SERVICE = "goatcli";
 const ACCOUNT = "goat-auth";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const DEVICE_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const CREDENTIAL_KEYS = [
   "accessToken",
@@ -205,8 +207,10 @@ function reconstructCredentials(value: unknown): GoatCredentials | null {
     !isTimestamp(value.refreshTokenExpiresAt)
   )
     return null;
-  if (value.deviceId !== undefined && typeof value.deviceId !== "string")
-    return null;
+  const hasDeviceId = value.deviceId !== undefined;
+  const hasDeviceSecret = value.deviceSecret !== undefined;
+  if (hasDeviceId !== hasDeviceSecret) return null;
+  if (value.deviceId !== undefined && !isDeviceId(value.deviceId)) return null;
   if (value.deviceSecret !== undefined && !isToken(value.deviceSecret))
     return null;
   return {
@@ -245,6 +249,10 @@ function isObjectWithKeys<
 
 function isToken(value: unknown): value is string {
   return typeof value === "string" && TOKEN_PATTERN.test(value);
+}
+
+function isDeviceId(value: unknown): value is string {
+  return typeof value === "string" && DEVICE_ID_PATTERN.test(value);
 }
 
 function isTimestamp(value: unknown): value is string {

@@ -197,7 +197,9 @@ test("provisions a per-device attestation credential through the bounded request
         request.url === "/v1/auth/device/credentials" &&
         request.headers.authorization === `Bearer ${ACCESS_TOKEN}`
       ) {
-        response.end(JSON.stringify({ deviceId: DEVICE_ID, deviceSecret: DEVICE_SECRET }));
+        response.end(
+          JSON.stringify({ deviceId: DEVICE_ID, deviceSecret: DEVICE_SECRET }),
+        );
       } else {
         response.statusCode = 404;
         response.end(JSON.stringify({ error: { code: "not_found" } }));
@@ -224,10 +226,7 @@ test("provisions a per-device attestation credential through the bounded request
   assert.equal(request.headers.authorization, `Bearer ${ACCESS_TOKEN}`);
   assert.equal(request.headers["user-agent"], "GOAT-auth/1");
   assert.equal(request.headers.accept, "application/json");
-  assert.equal(
-    request.headers["content-type"],
-    "application/json",
-  );
+  assert.equal(request.headers["content-type"], "application/json");
   assert.deepEqual(JSON.parse(request.body), {
     deviceId: DEVICE_ID,
     label: "goatcli",
@@ -272,7 +271,11 @@ test("provisionDeviceCredential validates inputs and responses before returning"
   for (const body of [
     { deviceId: "other", deviceSecret: DEVICE_SECRET },
     { deviceId: DEVICE_ID },
-    { deviceId: DEVICE_ID, deviceSecret: DEVICE_SECRET, extra: "ENV_SECRET_9DK1" },
+    {
+      deviceId: DEVICE_ID,
+      deviceSecret: DEVICE_SECRET,
+      extra: "ENV_SECRET_9DK1",
+    },
     { deviceId: DEVICE_ID, deviceSecret: "not-a-token" },
   ]) {
     await withServer(

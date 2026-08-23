@@ -383,7 +383,7 @@ function encodeRequest(
   const attestationBytes = attestation ?? EMPTY_CREDENTIAL;
   const declaredAttestationLength =
     request.message_type === "session_start"
-      ? (request as StartRequest).attestation_length ?? 0
+      ? ((request as StartRequest).attestation_length ?? 0)
       : 0;
   if (declaredAttestationLength !== attestationBytes.byteLength) {
     throw new LauncherIpcError("LAUNCHER_IPC_CREDENTIAL_INVALID");

@@ -18,13 +18,18 @@ export interface LoginOptions {
 
 const MIN_POLL_INTERVAL_SECONDS = 2;
 const MAX_POLL_INTERVAL_SECONDS = 120;
-const MAX_POLL_ATTEMPTS = 60;
 
 export async function runLogin(options: LoginOptions): Promise<number> {
   const clock = options.clock ?? {
     sleep: (ms: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, ms)),
   };
+  let previousCredentials: Awaited<ReturnType<CredentialStore["get"]>> = null;
+  try {
+    previousCredentials = await options.store.get();
+  } catch {
+    // A successful keyring write below can repair invalid or legacy state.
+  }
   const session = await options.client.createDeviceSession();
   const verificationUrl = prefilledVerificationUrl(
     session.verificationUrl,
@@ -32,15 +37,20 @@ export async function runLogin(options: LoginOptions): Promise<number> {
   );
   const opened = await options.opener.open(verificationUrl);
 
-  options.stdout.write(`GOAT login\n`);
+  options.stdout.write("Opening your browser to sign in...\n\n");
   if (!opened)
     options.stdout.write(`Open this URL in your browser: ${verificationUrl}\n`);
-  else options.stdout.write(`Opened browser URL: ${verificationUrl}\n`);
+  else options.stdout.write("Opened your browser to continue.\n");
   options.stdout.write(`Enter code: ${session.userCode}\n`);
 
   let intervalSeconds = clampInterval(session.intervalSeconds);
-  const deadline = Date.parse(session.expiresAt);
-  if (!Number.isFinite(deadline)) {
+  const serverDeadline = Date.parse(session.expiresAt);
+  if (
+    !Number.isFinite(serverDeadline) ||
+    !Number.isSafeInteger(session.expiresInSeconds) ||
+    session.expiresInSeconds < 1 ||
+    session.expiresInSeconds > 3_600
+  ) {
     options.stderr.write(
       "GOAT login: server returned an invalid expiry date.\n",
     );
@@ -49,30 +59,29 @@ export async function runLogin(options: LoginOptions): Promise<number> {
       .catch(() => undefined);
     return 1;
   }
-  let attempts = 0;
-  while (attempts < MAX_POLL_ATTEMPTS && Date.now() < deadline) {
-    attempts += 1;
+  const deadline = Math.min(
+    serverDeadline,
+    nowMs(clock) + session.expiresInSeconds * 1000,
+  );
+  while (nowMs(clock) < deadline) {
+    const sleepMs = Math.min(
+      intervalSeconds * 1000,
+      Math.max(0, deadline - nowMs(clock)),
+    );
+    if (sleepMs > 0) await clock.sleep(sleepMs);
+    if (nowMs(clock) >= deadline) break;
     const result = await options.client.pollDeviceToken(session.deviceCode);
     const handled = await handlePollResult(
       result,
       options,
-      clock,
       intervalSeconds,
-      deadline,
+      previousCredentials?.refreshToken ?? null,
     );
     if (handled.done) return handled.exitCode;
     intervalSeconds = clampInterval(handled.intervalSeconds ?? intervalSeconds);
   }
 
-  if (attempts >= MAX_POLL_ATTEMPTS) {
-    options.stderr.write(
-      `GOAT login stopped after ${MAX_POLL_ATTEMPTS} polling attempts. Try again.\n`,
-    );
-  } else {
-    options.stderr.write(
-      "GOAT login expired before authorization completed.\n",
-    );
-  }
+  options.stderr.write("GOAT login expired before authorization completed.\n");
   await options.client
     .cancelDeviceSession(session.deviceCode)
     .catch(() => undefined);
@@ -104,9 +113,8 @@ function clampInterval(seconds: number): number {
 async function handlePollResult(
   result: PollResult,
   options: LoginOptions,
-  clock: Clock,
   intervalSeconds: number,
-  deadline: number,
+  previousRefreshToken: string | null,
 ): Promise<
   { done: true; exitCode: number } | { done: false; intervalSeconds?: number }
 > {
@@ -133,41 +141,46 @@ async function handlePollResult(
         randomUUID(),
         "goatcli",
       );
-      await options.store.set({ ...result.credentials, ...provisioned });
+      if (provisioned) {
+        await options.store.set({ ...result.credentials, ...provisioned });
+      }
     } catch {
       // Attestation remains optional; the stored base credentials are valid.
     }
-    options.stdout.write("GOAT login complete.\n");
+    if (
+      previousRefreshToken &&
+      previousRefreshToken !== result.credentials.refreshToken
+    ) {
+      try {
+        await options.client.revoke(previousRefreshToken);
+      } catch {
+        options.stderr.write(
+          "GOAT signed in, but could not revoke the previous server session.\n",
+        );
+      }
+    }
+    options.stdout.write("✓ Signed in successfully\n");
     return { done: true, exitCode: 0 };
   }
   if (result.status === "pending") {
-    const effectiveInterval = clampInterval(
-      result.intervalSeconds ?? intervalSeconds,
-    );
-    const sleepMs = Math.min(
-      effectiveInterval * 1000,
-      Math.max(0, deadline - Date.now()),
-    );
-    if (sleepMs > 0) await clock.sleep(sleepMs);
-    return { done: false, intervalSeconds: result.intervalSeconds };
-  }
-  if (result.status === "slow_down") {
-    const sleepMs = Math.min(
-      result.retryAfterSeconds * 1000,
-      Math.max(0, deadline - Date.now()),
-    );
-    if (sleepMs > 0) await clock.sleep(sleepMs);
     return {
       done: false,
-      intervalSeconds: Math.max(intervalSeconds, result.retryAfterSeconds),
+      intervalSeconds: Math.max(
+        intervalSeconds,
+        clampInterval(result.intervalSeconds ?? intervalSeconds),
+      ),
+    };
+  }
+  if (result.status === "slow_down") {
+    return {
+      done: false,
+      intervalSeconds: Math.max(
+        intervalSeconds,
+        clampInterval(result.retryAfterSeconds),
+      ),
     };
   }
   if (result.status === "network_error") {
-    const sleepMs = Math.min(
-      intervalSeconds * 1000,
-      Math.max(0, deadline - Date.now()),
-    );
-    if (sleepMs > 0) await clock.sleep(sleepMs);
     return {
       done: false,
       intervalSeconds: Math.min(intervalSeconds * 2, MAX_POLL_INTERVAL_SECONDS),
@@ -175,6 +188,10 @@ async function handlePollResult(
   }
   options.stderr.write("GOAT login was not authorized. Try again.\n");
   return { done: true, exitCode: 1 };
+}
+
+function nowMs(clock: Clock): number {
+  return (clock.now?.() ?? new Date()).getTime();
 }
 
 async function discardUnstoredCredential(

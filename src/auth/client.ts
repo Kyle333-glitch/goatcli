@@ -12,6 +12,7 @@ import type {
   PollResult,
   UsageAccountStatus,
   UsageQuotaSummary,
+  UsageSessionSummary,
   UsageSummaryResponse,
   UsageSummaryResult,
   UsageWindowSummary,
@@ -38,6 +39,7 @@ const ROUTES = {
   refresh: "/v1/auth/tokens/refresh",
   revoke: "/v1/auth/tokens/revoke",
   usage: "/v1/usage/summary",
+  usageSessionClose: "/v1/usage/session/close",
 } as const;
 
 export type ControlPlaneClientErrorCode =
@@ -202,6 +204,40 @@ export function createAuthApiClient(baseUrl: URL): AuthApiClient {
       return { deviceId: value.deviceId, deviceSecret: value.deviceSecret };
     },
 
+    async closeUsageSession(accessToken, sessionId) {
+      if (
+        !isOpaqueToken(accessToken) ||
+        !/^[A-Za-z0-9_.:-]{1,128}$/.test(sessionId)
+      ) {
+        throw new ControlPlaneClientError("invalid_auth_data");
+      }
+      const response = await performEssentialRequest(origin, {
+        kind: "usage_session_close",
+        accessToken,
+        sessionId,
+      });
+      const body = parseJsonBody(response);
+      if (response.statusCode !== 200)
+        throw new ControlPlaneClientError("unexpected_response");
+      const value = exactObject(body, ["chargedMinutes", "sessionsRemaining"]);
+      const chargedMinutes = value?.chargedMinutes as number;
+      const sessionsRemaining = value?.sessionsRemaining as number | null;
+      if (
+        !value ||
+        !Number.isSafeInteger(chargedMinutes) ||
+        chargedMinutes < 0 ||
+        !(
+          sessionsRemaining === null ||
+          (typeof sessionsRemaining === "number" &&
+            Number.isFinite(sessionsRemaining) &&
+            sessionsRemaining >= 0)
+        )
+      ) {
+        throw new ControlPlaneClientError("unexpected_response");
+      }
+      return { chargedMinutes, sessionsRemaining };
+    },
+
     async getUsageSummary(accessToken) {
       if (!isOpaqueToken(accessToken)) {
         return {
@@ -249,6 +285,7 @@ type EssentialOperation =
   | { kind: "refresh"; refreshToken: string }
   | { kind: "revoke"; refreshToken: string }
   | { kind: "usage"; accessToken: string }
+  | { kind: "usage_session_close"; accessToken: string; sessionId: string }
   | {
       kind: "provision_device";
       accessToken: string;
@@ -308,6 +345,15 @@ function performEssentialRequest(
         undefined,
         operation.accessToken,
       );
+    case "usage_session_close":
+      return sendRequest(
+        origin,
+        "POST",
+        ROUTES.usageSessionClose,
+        USAGE_USER_AGENT,
+        { sessionId: operation.sessionId },
+        operation.accessToken,
+      );
     case "provision_device":
       return sendRequest(
         origin,
@@ -316,9 +362,7 @@ function performEssentialRequest(
         AUTH_USER_AGENT,
         {
           deviceId: operation.deviceId,
-          ...(operation.label === undefined
-            ? {}
-            : { label: operation.label }),
+          ...(operation.label === undefined ? {} : { label: operation.label }),
         },
         operation.accessToken,
       );
@@ -333,7 +377,8 @@ function sendRequest(
   jsonBody?:
     | { deviceCode: string }
     | { refreshToken: string }
-    | { deviceId: string; label?: string },
+    | { deviceId: string; label?: string }
+    | { sessionId: string },
   accessToken?: string,
 ): Promise<EssentialResponse> {
   const body =
@@ -660,13 +705,11 @@ function parseUsageSummaryResponse(
 }
 
 function parseUsageSummary(body: unknown): UsageSummaryResponse | null {
-  const value = exactObject(body, [
-    "version",
-    "generatedAt",
-    "account",
-    "quota",
-    "window",
-  ]);
+  const value = exactObject(
+    body,
+    ["version", "generatedAt", "account", "quota", "window", "session"],
+    ["session"],
+  );
   if (
     !value ||
     value.version !== "v0.3.2" ||
@@ -680,14 +723,18 @@ function parseUsageSummary(body: unknown): UsageSummaryResponse | null {
   if (!isUsageAccountStatus(account.status)) return null;
 
   const quota = parseUsageQuota(value.quota);
+  const session =
+    value.session === undefined ? undefined : parseUsageSession(value.session);
   const window = parseUsageWindow(value.window);
-  if (!quota || !window) return null;
+  if (!quota || (value.session !== undefined && !session) || !window)
+    return null;
 
   return {
     version: "v0.3.2",
     generatedAt: value.generatedAt,
     account: { status: account.status },
     quota,
+    ...(session ? { session } : {}),
     window,
   };
 }
@@ -716,6 +763,41 @@ function parseUsageQuota(input: unknown): UsageQuotaSummary | null {
   };
 }
 
+function parseUsageSession(input: unknown): UsageSessionSummary | null {
+  const value = exactObject(input, [
+    "kind",
+    "sessionsPerDay",
+    "sessionsRemaining",
+    "usedMinutes",
+    "remainingMinutes",
+    "sessionSeconds",
+    "roundingMinutes",
+    "graceMinutes",
+    "activeSessionId",
+    "activeSessionStartedAt",
+    "activeSessionMinutes",
+  ]);
+  if (
+    !value ||
+    value.kind !== "daily" ||
+    !isFiniteNumberOrNull(value.sessionsPerDay) ||
+    !isFiniteNumberOrNull(value.sessionsRemaining) ||
+    !isFiniteNumberOrNull(value.usedMinutes) ||
+    !isFiniteNumberOrNull(value.remainingMinutes) ||
+    !isIntegerInRange(value.sessionSeconds, 1, 31_536_000) ||
+    !isIntegerInRange(value.roundingMinutes, 1, 1_440) ||
+    !isIntegerInRange(value.graceMinutes, 0, 1_440) ||
+    !(
+      value.activeSessionId === null ||
+      isBoundedStringOrNull(value.activeSessionId, 128)
+    ) ||
+    !isIsoDateOrNull(value.activeSessionStartedAt) ||
+    !isFiniteNumber(value.activeSessionMinutes)
+  )
+    return null;
+  return value as unknown as UsageSessionSummary;
+}
+
 function parseUsageWindow(input: unknown): UsageWindowSummary | null {
   const value = exactObject(input, [
     "kind",
@@ -725,7 +807,7 @@ function parseUsageWindow(input: unknown): UsageWindowSummary | null {
   ]);
   if (
     !value ||
-    value.kind !== "rolling" ||
+    (value.kind !== "rolling" && value.kind !== "daily") ||
     !(
       value.seconds === null || isIntegerInRange(value.seconds, 1, 31_536_000)
     ) ||
@@ -735,7 +817,7 @@ function parseUsageWindow(input: unknown): UsageWindowSummary | null {
     return null;
   }
   return {
-    kind: "rolling",
+    kind: value.kind,
     seconds: value.seconds,
     startedAt: value.startedAt,
     nextUsageExpiresAt: value.nextUsageExpiresAt,
@@ -789,9 +871,10 @@ function isOkResponse(body: unknown): boolean {
 function exactObject(
   value: unknown,
   keys: readonly string[],
+  optional: readonly string[] = [],
 ): Record<string, unknown> | null {
   const object = objectValue(value);
-  if (!object || !hasOnlyKeys(object, keys)) return null;
+  if (!object || !hasOnlyKeys(object, keys, optional)) return null;
   return object;
 }
 
@@ -860,6 +943,19 @@ function isIntegerInRangeOrNull(
   maximum: number,
 ): value is number | null {
   return value === null || isIntegerInRange(value, minimum, maximum);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= 31_536_000
+  );
+}
+
+function isFiniteNumberOrNull(value: unknown): value is number | null {
+  return value === null || isFiniteNumber(value);
 }
 
 function isBoundedStringOrNull(

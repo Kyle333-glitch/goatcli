@@ -8,6 +8,12 @@
     "goat": "./dist/index.js"
   },
   "type": "module",
+  "napi": {
+    "binaryName": "goatcli-windows-spawn"
+  },
+  "workspaces": [
+    "native/windows-spawn/npm/*"
+  ],
   "files": [
     "dist/",
     "README.md",
@@ -19,17 +25,24 @@
     "clean": "node ./scripts/clean-dist.mjs",
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "format:check": "prettier --check package.json tsconfig.json tsconfig.build.json README.md PRIVACY.md 04-cli-implementation-report.md \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.mjs\" \".github/workflows/*.yml\"",
+    "format:check": "prettier --check package.json tsconfig.json tsconfig.build.json README.md PRIVACY.md 04-cli-implementation-report.md \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.mjs\" \"native/windows-spawn/npm/**/*.{js,ts,json,md}\" native/installer/README.md \".github/workflows/*.yml\"",
     "lint": "npm run privacy:check",
     "test:privacy": "npm run build && node --import tsx --test \"src/auth/*.test.ts\" \"src/commands/*.test.ts\" \"src/engine/privacy-*.test.ts\" \"src/privacy/*.test.ts\"",
     "test:cross-repo": "node ./scripts/test-cross-repo.mjs",
     "test:cross-repo-v041": "node ./scripts/test-v041-cross-repo.mjs",
-    "test:platform-e2e": "npm run build && node --import tsx --test test/v0.4.1-e2e/launcher.test.ts test/v0.4.1-e2e/process-containment.native.test.ts",
+    "verify:engine-packages": "node ./scripts/verify-engine-packages.mjs",
+    "test:platform-e2e": "npm run build && node --import tsx --test test/v0.4.1-e2e/launcher.test.ts test/v0.4.1-e2e/process-containment.native.test.ts test/windows-privacy-spawn/native-windows.test.ts",
     "test:platform-integrity": "npm run build && node --import tsx --test src/engine/validate.test.ts src/update/archive.test.ts src/update/code-signing.test.ts src/update/recovery.test.ts src/update/rollback.test.ts",
+    "native:build": "napi build --manifest-path ./native/windows-spawn/Cargo.toml --platform --no-js --dts ../../target/goatcli-windows-spawn.d.ts",
+    "native:installer:test": "cargo test --manifest-path ./native/installer/Cargo.toml --locked",
+    "native:installer:build": "cargo build --manifest-path ./native/installer/Cargo.toml --release",
+    "native:build:test": "napi build --manifest-path ./native/windows-spawn/Cargo.toml --release --features test-hooks --output-dir ./native/windows-spawn/target/test-hooks && node ./native/windows-spawn/copy-test-binding.mjs",
+    "native:test": "node --test ./native/windows-spawn/npm/wrapper/test/loader.test.js && cargo fmt --manifest-path ./native/windows-spawn/Cargo.toml --check && cargo clippy --manifest-path ./native/windows-spawn/Cargo.toml --locked --all-targets --all-features -- -D warnings && cargo test --manifest-path ./native/windows-spawn/Cargo.toml --locked && npm run native:build:test",
     "privacy:check": "node ./scripts/check-privacy-architecture.mjs",
     "test:ci": "npm run build && node --import tsx --test",
     "test": "npm run test:ci -- \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
     "verify:package": "npm run build && npm run privacy:check && node ./scripts/verify-package.mjs",
+    "verify:windows-spawn-packages": "npm run build && node ./scripts/verify-package.mjs --native-packages",
     "prepublishOnly": "npm run format:check && npm run typecheck && npm test && npm run verify:package"
   },
   "repository": {
@@ -55,7 +68,15 @@
     "semver": "7.8.5",
     "yauzl": "3.4.0"
   },
+  "optionalDependencies": {
+    "goat-engine-darwin-arm64": "1.17.11",
+    "goat-engine-darwin-x64": "1.17.11",
+    "goat-engine-windows-arm64": "1.17.11",
+    "goat-engine-windows-x64": "1.17.11",
+    "goatcli-windows-spawn": "0.4.0"
+  },
   "devDependencies": {
+    "@napi-rs/cli": "3.1.5",
     "@types/node": "^24.13.3",
     "@types/semver": "7.7.1",
     "@types/yauzl": "3.4.0",
@@ -64,6 +85,6 @@
     "typescript": "^5.5.4"
   },
   "engines": {
-    "node": ">=24.16.0"
+    "node": ">=22.18.0"
   }
 }

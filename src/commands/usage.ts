@@ -51,15 +51,29 @@ export async function runUsage(options: UsageOptions): Promise<number> {
 }
 
 export function formatUsageSummary(summary: UsageSummaryResponse): string {
+  const session = summary.session;
   const remaining = formatPercent(summary.quota.remainingPercent);
   const lines: string[] = [
-    summary.quota.remainingPercent === null
-      ? "GOAT usage — no active allowance"
-      : `GOAT usage — ${remaining} remaining`,
+    session
+      ? `GOAT premium sessions — ${formatSessions(session.sessionsRemaining)} remaining`
+      : summary.quota.remainingPercent === null
+        ? "GOAT usage — no active allowance"
+        : `GOAT usage — ${remaining} remaining`,
   ];
   lines.push(`Status: ${formatStatus(summary.account.status)}`);
-  lines.push(`Used: ${formatPercent(summary.quota.usedPercent)}`);
-  lines.push(`Committed: ${formatPercent(summary.quota.committedPercent)}`);
+  if (session) {
+    lines.push(`Premium time used: ${formatMinutes(session.usedMinutes)}`);
+    lines.push(
+      `Premium time remaining: ${formatMinutes(session.remainingMinutes)}`,
+    );
+    if (session.activeSessionStartedAt)
+      lines.push(
+        `Active session started: ${formatUtcMinute(session.activeSessionStartedAt)}`,
+      );
+  } else {
+    lines.push(`Used: ${formatPercent(summary.quota.usedPercent)}`);
+    lines.push(`Committed: ${formatPercent(summary.quota.committedPercent)}`);
+  }
 
   if (summary.quota.lowQuota) lines.push("Warning: GOAT quota is low.");
 
@@ -68,9 +82,11 @@ export function formatUsageSummary(summary: UsageSummaryResponse): string {
       `Next usage expires: ${formatUtcMinute(summary.window.nextUsageExpiresAt)}`,
     );
   } else if (summary.window.seconds === null) {
-    lines.push("Window: no active rolling allowance");
+    lines.push("Window: no active allowance");
   } else {
-    lines.push("Window: rolling 24 hours");
+    lines.push(
+      `Window: ${summary.window.kind === "daily" ? "daily" : "rolling 24 hours"}`,
+    );
   }
 
   return `${lines.join("\n")}\n`;
@@ -150,8 +166,23 @@ async function refreshCredentials(
 ): Promise<{ credentials: GoatCredentials } | { error: UsageCommandError }> {
   const result = await options.client.refresh(credentials.refreshToken);
   if (result.status === "authorized") {
+    // A rotated credential set keeps the previously enrolled device
+    // attestation: the control plane refresh response only carries base
+    // credentials, so carry the device fields over or the next inference
+    // request silently loses its attestation (and would fail when
+    // attestation is required). This mirrors the refresh paths in
+    // `refreshStoredCredentials` and `preparePrivacyCredential`.
+    const refreshed = {
+      ...result.credentials,
+      ...(credentials.deviceId && credentials.deviceSecret
+        ? {
+            deviceId: credentials.deviceId,
+            deviceSecret: credentials.deviceSecret,
+          }
+        : {}),
+    };
     try {
-      await options.store.set(result.credentials);
+      await options.store.set(refreshed);
     } catch {
       await discardUnstoredCredential(
         options.client,
@@ -160,7 +191,7 @@ async function refreshCredentials(
       );
       return { error: unavailableError() };
     }
-    return { credentials: result.credentials };
+    return { credentials: refreshed };
   }
   if (result.status === "network_error") return { error: offlineError() };
   if (
@@ -221,6 +252,18 @@ function formatPercent(value: number | null): string {
   return value === null || !Number.isInteger(value) || value < 0 || value > 100
     ? "n/a"
     : `${value}%`;
+}
+
+function formatSessions(value: number | null): string {
+  return value === null || !Number.isFinite(value) || value < 0
+    ? "n/a"
+    : value.toFixed(1);
+}
+
+function formatMinutes(value: number | null): string {
+  return value === null || !Number.isFinite(value) || value < 0
+    ? "n/a"
+    : `${Math.round(value)} minutes`;
 }
 
 function formatUtcMinute(value: string): string {

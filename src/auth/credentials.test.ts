@@ -41,6 +41,24 @@ test("accepts only the exact five-field credential schema and 43-byte tokens", (
   }
 });
 
+test("accepts device attestation only as a complete UUID-and-secret pair", () => {
+  const device = {
+    deviceId: "018f47a2-9b3c-7def-8abc-0123456789ab",
+    deviceSecret: "S".repeat(43),
+  };
+  assert.deepEqual(parseCredentials(JSON.stringify({ ...VALID, ...device })), {
+    ...VALID,
+    ...device,
+  });
+  for (const value of [
+    { ...VALID, deviceId: device.deviceId },
+    { ...VALID, deviceSecret: device.deviceSecret },
+    { ...VALID, ...device, deviceId: "not-a-uuid" },
+  ]) {
+    assert.equal(parseCredentials(JSON.stringify(value)), null);
+  }
+});
+
 test("uses only the OS keyring for active credentials and verifies writes", async () => {
   await withCredentialRoot(async (root, platform) => {
     const keyring = new MemoryKeyring();
