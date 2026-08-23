@@ -16,45 +16,56 @@ on:
         description: Exact 40-character goat-control-plane commit SHA
         required: true
         type: string
+      platforms:
+        description: "Runner platforms to execute (non-Windows only when 'all')"
+        type: choice
+        options:
+          - windows
+          - all
+        default: windows
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-
 jobs:
+  matrix:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      verify: ${{ steps.set.outputs.verify }}
+      cross_repo: ${{ steps.set.outputs.cross_repo }}
+    steps:
+      - name: Resolve runner platforms
+        id: set
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PLATFORMS_INPUT: ${{ inputs.platforms }}
+        run: |
+          # Windows ARM can hang while terminating that native file-lock
+          # fixture after the assertion, so that scenario is excluded there.
+          windows='{"os":"windows-latest","arch":"x64","node":"24.16.0","rust_target":"x86_64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-x64-msvc","native_package_dir":"win32-x64-msvc","test_shard":"1/1","test_excludes":""},{"os":"windows-latest","arch":"x64","node":"22.18.0","rust_target":"x86_64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-x64-msvc","native_package_dir":"win32-x64-msvc","test_shard":"1/1","test_excludes":""},{"os":"windows-11-arm","arch":"arm64","node":"24.16.0","rust_target":"aarch64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-arm64-msvc","native_package_dir":"win32-arm64-msvc","test_shard":"1/2","test_excludes":"src/update/locked-exe.native.test.ts"},{"os":"windows-11-arm","arch":"arm64","node":"24.16.0","rust_target":"aarch64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-arm64-msvc","native_package_dir":"win32-arm64-msvc","test_shard":"2/2","test_excludes":"src/update/locked-exe.native.test.ts"},{"os":"windows-11-arm","arch":"arm64","node":"22.18.0","rust_target":"aarch64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-arm64-msvc","native_package_dir":"win32-arm64-msvc","test_shard":"1/2","test_excludes":"src/update/locked-exe.native.test.ts"},{"os":"windows-11-arm","arch":"arm64","node":"22.18.0","rust_target":"aarch64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-arm64-msvc","native_package_dir":"win32-arm64-msvc","test_shard":"2/2","test_excludes":"src/update/locked-exe.native.test.ts"}'
+          if [ "$EVENT_NAME" != "workflow_dispatch" ] || [ "$PLATFORMS_INPUT" = "all" ]; then
+            extra=',{"os":"macos-latest","arch":"arm64","node":"24.16.0","test_shard":"1/1","test_excludes":""},{"os":"macos-15-intel","arch":"x64","node":"24.16.0","test_shard":"1/1","test_excludes":""}'
+            cross_repo='{"os":["windows-latest","macos-latest"]}'
+          else
+            extra=''
+            cross_repo='{"os":["windows-latest"]}'
+          fi
+          {
+            echo "verify={\"include\":[${windows}${extra}]}"
+            echo "cross_repo=$cross_repo"
+          } >> "$GITHUB_OUTPUT"
+
   verify:
-    name: verify (${{ matrix.os }} / ${{ matrix.arch }} / shard ${{ matrix.test_shard }})
+    needs: matrix
+    name: verify (${{ matrix.os }} / ${{ matrix.arch }} / node ${{ matrix.node }} / shard ${{ matrix.test_shard }})
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            arch: x64
-            test_shard: "1/1"
-            test_excludes: ""
-          # The locked-image test is covered by the Windows x64 job above.
-          # Windows ARM can hang while terminating that native fixture after
-          # the assertion, so keep the remaining ARM suite independently
-          # bounded and do not run that unsupported file-lock scenario there.
-          - os: windows-11-arm
-            arch: arm64
-            test_shard: "1/2"
-            test_excludes: "src/update/locked-exe.native.test.ts"
-          - os: windows-11-arm
-            arch: arm64
-            test_shard: "2/2"
-            test_excludes: "src/update/locked-exe.native.test.ts"
-          - os: macos-latest
-            arch: arm64
-            test_shard: "1/1"
-            test_excludes: ""
-          - os: macos-15-intel
-            arch: x64
-            test_shard: "1/1"
-            test_excludes: ""
+      matrix: ${{ fromJSON(needs.matrix.outputs.verify) }}
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
@@ -65,12 +76,31 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "24.16.0"
+          node-version: "${{ matrix.node }}"
           cache: "npm"
           cache-dependency-path: package-lock.json
 
+      - name: Setup Bun for native privacy IPC (Windows)
+        if: runner.os == 'Windows'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14"
+
+      - name: Setup pinned Rust toolchain (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --target "$env:RUST_TARGET"
+          rustup default 1.88.0
+          rustc --version --verbose
+          cargo --version
+
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        # --force only permits both CPU-specific source workspaces to coexist;
+        # their published os/cpu metadata and artifact checks remain strict.
+        run: npm ci --ignore-scripts --force
 
       - name: Print runner platform and architecture
         run: |
@@ -124,6 +154,28 @@ jobs:
           if command -v codesign >/dev/null 2>&1; then echo "codesign available"; else echo "codesign not on PATH; macOS signing tests will be environment-gated."; fi
           if command -v spctl >/dev/null 2>&1; then echo "spctl available"; else echo "spctl not on PATH; Gatekeeper tests will be environment-gated."; fi
 
+      - name: Check and test native Windows spawner
+        if: runner.os == 'Windows'
+        run: npm run native:test
+        timeout-minutes: 15
+
+      - name: Build native Windows spawner
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          NATIVE_PACKAGE_DIR: ${{ matrix.native_package_dir }}
+        run: |
+          npm run native:build -- --release --target "$RUST_TARGET" --output-dir "./native/windows-spawn/npm/$NATIVE_PACKAGE_DIR"
+        timeout-minutes: 15
+
+      - name: Verify native npm artifacts
+        if: runner.os == 'Windows'
+        env:
+          NATIVE_PACKAGE: ${{ matrix.native_package }}
+        run: npm run verify:windows-spawn-packages -- --native-package "$NATIVE_PACKAGE"
+        timeout-minutes: 10
+
       - name: Check formatting
         run: npm run format:check
         timeout-minutes: 5
@@ -144,6 +196,7 @@ jobs:
         shell: bash
         env:
           TEST_EXCLUDES: ${{ matrix.test_excludes }}
+          TEST_SHARD: ${{ matrix.test_shard }}
         run: |
           set -o pipefail
           if [[ -n "$TEST_EXCLUDES" ]]; then
@@ -158,7 +211,7 @@ jobs:
             echo "No test files selected" >&2
             exit 1
           fi
-          npm run test:ci -- --test-shard="${{ matrix.test_shard }}" "${test_args[@]}" --test-reporter=tap | tee test-output.log
+          npm run test:ci -- --test-shard="$TEST_SHARD" "${test_args[@]}" --test-reporter=tap | tee test-output.log
         timeout-minutes: 20
 
       - name: Check for unexpectedly skipped native tests
@@ -172,7 +225,8 @@ jobs:
             @(
               "Authenticode test runs only on Windows",
               "locked-executable test runs only on Windows",
-              "taskkill command failure is Windows-specific"
+              "taskkill command failure is Windows-specific",
+              "native Windows privacy spawn runs only on Windows"
             )
           }
           $unexpected = @()
@@ -198,7 +252,6 @@ jobs:
         timeout-minutes: 5
 
       - name: Verify actual package artifact
-        id: package_verification
         if: ${{ matrix.test_shard == '1/1' || matrix.test_shard == '1/2' }}
         shell: bash
         run: |
@@ -206,12 +259,12 @@ jobs:
         timeout-minutes: 10
 
       - name: Upload package artifact-inspection report
-        if: ${{ !cancelled() && steps.package_verification.outcome != 'skipped' }}
+        if: ${{ always() && (matrix.test_shard == '1/1' || matrix.test_shard == '1/2') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: goatcli-package-verification-${{ runner.os }}-${{ matrix.arch }}
+          name: goatcli-package-verification-${{ runner.os }}-${{ matrix.arch }}-node-${{ matrix.node }}
           path: ${{ runner.temp }}/goatcli-package-verification.json
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
       - name: Verify clean checkout after build and tests
@@ -227,14 +280,14 @@ jobs:
           fi
 
   v041-cross-repo:
+    needs: matrix
     name: v0.4.1 immutable mocked cross-repo (${{ matrix.os }})
     if: ${{ github.event_name == 'workflow_dispatch' }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
-      matrix:
-        os:
-          - windows-latest
-          - macos-latest
+      matrix: ${{ fromJSON(needs.matrix.outputs.cross_repo) }}
     runs-on: ${{ matrix.os }}
     steps:
       - name: Validate immutable cross-repository refs
@@ -290,9 +343,19 @@ jobs:
         with:
           bun-version: "1.3.14"
 
+      - name: Setup pinned Rust toolchain (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --target x86_64-pc-windows-msvc
+          rustup default 1.88.0
+          rustc --version --verbose
+
       - name: Install goatcli dependencies
         working-directory: goatcli
-        run: npm ci --ignore-scripts
+        # --force only permits both CPU-specific source workspaces to coexist;
+        # their published os/cpu metadata and artifact checks remain strict.
+        run: npm ci --ignore-scripts --force
 
       - name: Install goat-engine dependencies
         working-directory: goat-engine
@@ -301,6 +364,16 @@ jobs:
       - name: Install goat-control-plane dependencies
         working-directory: goat-control-plane
         run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Build and verify native Windows privacy spawner
+        if: runner.os == 'Windows'
+        working-directory: goatcli
+        shell: bash
+        run: |
+          npm run native:test
+          npm run native:build -- --release --target x86_64-pc-windows-msvc --output-dir ./native/windows-spawn/npm/win32-x64-msvc
+          npm run verify:windows-spawn-packages -- --native-package goatcli-windows-spawn-win32-x64-msvc
+        timeout-minutes: 20
 
       - name: Print runner platform and architecture
         run: node -e "console.log('process.platform=' + process.platform); console.log('process.arch=' + process.arch);"

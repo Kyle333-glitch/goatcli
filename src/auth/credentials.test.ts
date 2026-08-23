@@ -41,6 +41,24 @@ test("accepts only the exact five-field credential schema and 43-byte tokens", (
   }
 });
 
+test("accepts device attestation only as a complete UUID-and-secret pair", () => {
+  const device = {
+    deviceId: "018f47a2-9b3c-7def-8abc-0123456789ab",
+    deviceSecret: "S".repeat(43),
+  };
+  assert.deepEqual(parseCredentials(JSON.stringify({ ...VALID, ...device })), {
+    ...VALID,
+    ...device,
+  });
+  for (const value of [
+    { ...VALID, deviceId: device.deviceId },
+    { ...VALID, deviceSecret: device.deviceSecret },
+    { ...VALID, ...device, deviceId: "not-a-uuid" },
+  ]) {
+    assert.equal(parseCredentials(JSON.stringify(value)), null);
+  }
+});
+
 test("uses only the OS keyring for active credentials and verifies writes", async () => {
   await withCredentialRoot(async (root, platform) => {
     const keyring = new MemoryKeyring();
@@ -54,7 +72,7 @@ test("uses only the OS keyring for active credentials and verifies writes", asyn
   });
 });
 
-test("refuses automatic plaintext migration and never mutates legacy files", async () => {
+test("refuses automatic plaintext migration and removes the legacy file after keyring login and logout", async () => {
   await withCredentialRoot(async (root, platform) => {
     const keyring = new MemoryKeyring();
     const legacyPath = legacyCredentialPath(root, platform);
@@ -72,18 +90,20 @@ test("refuses automatic plaintext migration and never mutates legacy files", asy
         !error.message.includes(legacyPath),
     );
     assert.equal(keyring.raw, null);
+    // Fail-closed get() never reads or migrates the plaintext file.
     assert.equal(await fs.readFile(legacyPath, "utf8"), JSON.stringify(VALID));
     assert.equal(await fs.readFile(stalePath, "utf8"), "stale");
 
+    // A verified keyring write removes the stale plaintext credential file and
+    // its matching temporary file so no credential remains at rest in plaintext.
     await store.set(VALID);
     assert.deepEqual(await store.get(), VALID);
-    assert.equal(await fs.readFile(legacyPath, "utf8"), JSON.stringify(VALID));
-    assert.equal(await fs.readFile(stalePath, "utf8"), "stale");
+    await assert.rejects(() => fs.readFile(legacyPath, "utf8"));
+    await assert.rejects(() => fs.readFile(stalePath, "utf8"));
 
+    // Logout clears the keyring; the plaintext files are already gone.
     await store.delete();
     assert.equal(keyring.raw, null);
-    assert.equal(await fs.readFile(legacyPath, "utf8"), JSON.stringify(VALID));
-    assert.equal(await fs.readFile(stalePath, "utf8"), "stale");
   });
 });
 
@@ -127,24 +147,45 @@ test("treats a legacy directory as relogin-required without mutating it", async 
   });
 });
 
-test("does not delete a replacement path after keyring write verification", async () => {
+test("does not follow a symlink planted at the legacy path during keyring write", async (context) => {
   await withCredentialRoot(async (root, platform) => {
     const legacyPath = legacyCredentialPath(root, platform);
-    const replacementPath = path.join(root, "attacker-replacement.json");
+    const stagingPath = `${legacyPath}.staging`;
+    const targetPath = path.join(root, "TOKEN_SECRET_8MVP.json");
     await fs.mkdir(path.dirname(legacyPath), { recursive: true });
     await fs.writeFile(legacyPath, "original", "utf8");
-    await fs.writeFile(replacementPath, "replacement", "utf8");
+    await fs.writeFile(targetPath, JSON.stringify(VALID), "utf8");
+    try {
+      await fs.symlink(targetPath, stagingPath, "file");
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        ["EPERM", "EACCES", "ENOTSUP"].includes(
+          String((error as { code?: unknown }).code),
+        )
+      ) {
+        context.skip("file symlinks are unavailable on this host");
+        return;
+      }
+      throw error;
+    }
+
     const keyring = new MemoryKeyring();
     keyring.beforeGet = async () => {
       await fs.rm(legacyPath);
-      await fs.rename(replacementPath, legacyPath);
+      await fs.rename(stagingPath, legacyPath);
     };
     const store = createCredentialStore(storeOptions(root, platform, keyring));
 
     await store.set(VALID);
 
     assert.equal(keyring.raw, JSON.stringify(VALID));
-    assert.equal(await fs.readFile(legacyPath, "utf8"), "replacement");
+    // Cleanup uses lstat, so a symlink is never followed or deleted, and its
+    // target survives.
+    assert.equal((await fs.lstat(legacyPath)).isSymbolicLink(), true);
+    assert.equal(await fs.readFile(targetPath, "utf8"), JSON.stringify(VALID));
   });
 });
 

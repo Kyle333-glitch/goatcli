@@ -2,8 +2,9 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import {
   EngineContractError,
   type EngineManifest,
@@ -17,7 +18,10 @@ import {
   type ProcessLike,
   type SpawnEngine,
 } from "./launch.js";
-import type { EngineFileSystem } from "./validate.js";
+import {
+  canonicalEngineManifestPayload,
+  type EngineFileSystem,
+} from "./validate.js";
 import { engineManifestTrustPolicy } from "../privacy/release-policy.js";
 import {
   createTestBundleTrust,
@@ -156,6 +160,100 @@ test("launchEngine enforces trust policy during legacy engine resolution", async
       error.code === "GOAT_ENGINE_SIGNATURE_INVALID",
   );
   assert.equal(spawned, false);
+});
+
+test("falls back to a valid npm engine when a legacy app-data engine is invalid", async () => {
+  const appDataDir = fs.mkdtempSync(
+    path.join(process.cwd(), "goat-engine-fallback-"),
+  );
+  const installRoot = path.win32.join(
+    appDataDir,
+    "engines",
+    "stable",
+    "win32-x64",
+  );
+  const staleExecutablePath = path.win32.join(
+    installRoot,
+    "bin",
+    "goat-engine.exe",
+  );
+  const staleManifestPath = path.win32.join(installRoot, "goat-engine.json");
+  const npmRoot = path.join(appDataDir, "npm", "goat-engine-windows-x64");
+  const npmExecutablePath = path.join(npmRoot, "bin", "goat-engine.exe");
+  const npmManifestPath = path.join(npmRoot, "goat-engine.json");
+  const staleEngineBytes = Buffer.from("stale app-data engine");
+  const npmEngineBytes = Buffer.from("valid npm engine");
+  const signing = generateKeyPairSync("ed25519");
+  const publicKeyBytes = signing.publicKey.export({
+    format: "der",
+    type: "spki",
+  });
+  assert.ok(Buffer.isBuffer(publicKeyBytes));
+  const signingPolicy = {
+    ...engineManifestTrustPolicy(),
+    allowUnsignedDevelopment: false,
+    engineManifestKeyIds: [sha256(publicKeyBytes)],
+  };
+  const npmManifest = signStableManifest(
+    sha256(npmEngineBytes),
+    signing.privateKey,
+    signing.publicKey,
+  );
+
+  fs.mkdirSync(path.dirname(staleExecutablePath), { recursive: true });
+  fs.writeFileSync(staleExecutablePath, staleEngineBytes);
+  fs.writeFileSync(
+    staleManifestPath,
+    JSON.stringify(makeManifest("0".repeat(64))),
+  );
+  fs.mkdirSync(path.dirname(npmExecutablePath), { recursive: true });
+  fs.writeFileSync(npmExecutablePath, npmEngineBytes);
+  fs.writeFileSync(npmManifestPath, JSON.stringify(npmManifest));
+
+  const fakeFs = makeFakeFs({
+    [staleExecutablePath]: { content: staleEngineBytes, isFile: true },
+    [staleManifestPath]: {
+      content: JSON.stringify(makeManifest("0".repeat(64))),
+      isFile: true,
+    },
+    [npmExecutablePath]: { content: npmEngineBytes, isFile: true },
+    [npmManifestPath]: {
+      content: JSON.stringify(npmManifest),
+      isFile: true,
+    },
+  });
+  const child = new FakeChild();
+  let spawnedCommand: string | undefined;
+  const spawnEngine: SpawnEngine = (command) => {
+    spawnedCommand = command;
+    queueMicrotask(() => child.emit("exit", 0, null));
+    return child as unknown as ChildProcess;
+  };
+
+  try {
+    const result = await launchEngine({
+      args: ["run"],
+      launcherVersion: "0.0.6",
+      platform: "win32",
+      architecture: "x64",
+      appDataDir,
+      fs: fakeFs,
+      trustPolicy: signingPolicy,
+      npmEnginePackageResolver: () => ({
+        packageName: "goat-engine-windows-x64",
+        packageRoot: npmRoot,
+        executablePath: npmExecutablePath,
+        manifestPath: npmManifestPath,
+      }),
+      spawnEngine,
+      processLike: new FakeProcess("win32", "x64", "D:\\repo"),
+    });
+
+    assert.deepEqual(result, { exitCode: 0, signal: null });
+    assert.equal(spawnedCommand, npmExecutablePath);
+  } finally {
+    fs.rmSync(appDataDir, { recursive: true, force: true });
+  }
 });
 
 test("installed engine launch enforces a restrictive caller trust policy before spawn", async (context) => {
@@ -540,6 +638,32 @@ class FakeProcess extends EventEmitter implements ProcessLike {
   cwd(): string {
     return this.cwdValue;
   }
+}
+
+function signStableManifest(
+  checksum: string,
+  privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
+  publicKey: ReturnType<typeof generateKeyPairSync>["publicKey"],
+): EngineManifest {
+  const unsigned = makeManifest(checksum);
+  unsigned.releaseChannel = "stable";
+  const publicKeyBytes = publicKey.export({ format: "der", type: "spki" });
+  assert.ok(Buffer.isBuffer(publicKeyBytes));
+  const value = sign(
+    null,
+    Buffer.from(canonicalEngineManifestPayload(unsigned), "utf8"),
+    privateKey,
+  ).toString("base64url");
+  return {
+    ...unsigned,
+    signature: {
+      status: "signed",
+      algorithm: "ed25519",
+      keyId: sha256(publicKeyBytes),
+      publicKey: publicKeyBytes.toString("base64url"),
+      value,
+    },
+  };
 }
 
 function makeManifest(checksum: string): EngineManifest {

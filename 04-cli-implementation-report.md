@@ -144,7 +144,7 @@ The OS keyring is the only active credential store:
 
 The credential object must have exactly accessToken, refreshToken, tokenType, accessTokenExpiresAt, and refreshTokenExpiresAt. Unknown fields are rejected. Both tokens must be 43-character base64url values and tokenType must be Bearer.
 
-Plaintext fallback authentication was removed. A legacy auth.json is bounded to 4 KiB, must be a regular file containing the exact schema and valid UTF-8, and is migrated only after keyring write plus matching readback. Successful migration removes the legacy file and matching stale temporary files. Failed migration preserves the original file, never authenticates from it, and returns a fixed path-free error.
+Plaintext fallback authentication was removed. A legacy auth.json is never read or auto-migrated: without keyring credentials the CLI fails closed with a fixed path-free re-login instruction. Once keyring-backed credentials are written (or on logout), a verified regular legacy file and its matching stale temporary files are removed.
 
 Newly issued or rotated credentials are used only after a verified keyring write. If persistence fails, login, usage, and authenticated privacy commands fail closed, best-effort revoke the new refresh token, clear ambiguous local credential state, and expose no transport, keyring, or token details.
 

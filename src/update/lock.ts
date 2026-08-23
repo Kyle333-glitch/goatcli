@@ -16,6 +16,14 @@ import {
 } from "./durable.js";
 import { UpdateError } from "./errors.js";
 
+// SQLITE_DBCONFIG_DEFENSIVE is exposed through DatabaseSync.enableDefensive() and
+// the `defensive` constructor option only from Node 24.12.0+ (and is default-on
+// from 24.14.0+). Node 22 has no equivalent API, so on those runtimes defensive
+// mode is skipped. `PRAGMA trusted_schema = OFF` remains the primary guard, and
+// the lock database only ever executes fixed, parameterized SQL, which bounds
+// the reduction in hardening.
+const supportsDefensiveMode = "enableDefensive" in DatabaseSync.prototype;
+
 export interface UpdateLockOwner {
   readonly schema: 1;
   readonly token: string;
@@ -370,7 +378,7 @@ async function openLockDatabase(
       readBigInts: true,
       allowBareNamedParameters: false,
       allowUnknownNamedParameters: false,
-      defensive: true,
+      ...(supportsDefensiveMode ? { defensive: true } : {}),
     });
     configureConnection(database, readOnly);
     const result: OpenLockDatabase = {
@@ -396,7 +404,9 @@ async function openLockDatabase(
 }
 
 function configureConnection(database: DatabaseSync, readOnly: boolean): void {
-  database.enableDefensive(true);
+  if (supportsDefensiveMode) {
+    database.enableDefensive(true);
+  }
   database.exec("PRAGMA trusted_schema = OFF");
   database.exec("PRAGMA foreign_keys = ON");
   database.exec("PRAGMA temp_store = MEMORY");

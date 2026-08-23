@@ -1,0 +1,22 @@
+goatcli-windows-spawn-win32-arm64-msvc
+Copyright (c) 2026 GOAT Contributors
+
+The MIT license in LICENSE applies to this package's GOAT source.
+
+This binary is built with third-party Rust crates. Their copyrights remain with
+their respective authors and contributors:
+
+- napi, napi-sys, napi-derive, napi-derive-backend, and napi-build (napi-rs): MIT
+- windows-sys and windows-link (Microsoft): MIT OR Apache-2.0
+- bitflags, ctor, futures and its component crates, nohash-hasher,
+  pin-project-lite, rustc-hash, proc-macro2, quote, syn, and unicode-segmentation:
+  MIT OR Apache-2.0 (or Apache-2.0 OR MIT as declared by the crate)
+- libloading: ISC
+- memchr: Unlicense OR MIT
+- slab, convert_case, and semver: MIT
+- unicode-ident: (MIT OR Apache-2.0) AND Unicode-3.0
+
+The compiled native binding also incorporates the Rust standard library,
+distributed under MIT OR Apache-2.0. Complete license texts and source metadata
+are available from the corresponding crates.io packages and the Rust project.
+

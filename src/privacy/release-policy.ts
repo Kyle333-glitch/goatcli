@@ -4,6 +4,10 @@ import {
   GOAT_RELEASE_POLICY_SOURCE_SHA256,
 } from "./release-policy.generated.js";
 import { GOAT_RELEASE_POLICY_SIGNATURE } from "./release-policy-signature.generated.js";
+import {
+  verifyEmbeddedReleasePolicy,
+  type EmbeddedReleasePolicySignature,
+} from "./release-policy-verifier.js";
 
 export type ReleasePolicyFeature = keyof typeof GOAT_RELEASE_POLICY.features;
 
@@ -11,7 +15,15 @@ export type ApprovedProviderPolicy = {
   readonly providerId: string;
   readonly modelId: string;
   readonly publicAlias:
-    "goat/auto" | "goat/fast" | "goat/balanced" | "goat/hard" | "goat/vision";
+    | "goat/muse-spark-1.2-contributor"
+    | "goat/deepseek-v4-flash-0731"
+    | "goat/deepseek-v4-pro-0813"
+    | "goat/gpt-5.6-luna"
+    | "goat/auto"
+    | "goat/fast"
+    | "goat/balanced"
+    | "goat/hard"
+    | "goat/vision";
   readonly executionMode: "direct" | "hosted";
   readonly privacyApprovalId: string;
   readonly zdrApprovalId: string;
@@ -71,13 +83,8 @@ type ReleasePolicySnapshot = {
   };
 };
 
-type ReleasePolicySignatureSnapshot = {
-  readonly status: "unsigned-internal" | "signed";
-  readonly keyId: string | null;
-};
-
 const policy: ReleasePolicySnapshot = GOAT_RELEASE_POLICY;
-const signature: ReleasePolicySignatureSnapshot = GOAT_RELEASE_POLICY_SIGNATURE;
+const signature: EmbeddedReleasePolicySignature = GOAT_RELEASE_POLICY_SIGNATURE;
 
 export class ReleasePolicyError extends Error {
   constructor(
@@ -167,6 +174,16 @@ export function assertEmbeddedLauncherReleasePolicy(): void {
 export function assertLauncherReleasePolicy(input: {
   readonly production: boolean;
 }): void {
+  let cryptographicallySigned = false;
+  try {
+    cryptographicallySigned = verifyEmbeddedReleasePolicy({
+      policy,
+      sourceSha256: GOAT_RELEASE_POLICY_SOURCE_SHA256,
+      signature,
+    }).signed;
+  } catch {
+    throw new ReleasePolicyError("release_policy_invalid");
+  }
   if (
     policy.schemaVersion !== 1 ||
     policy.releaseVersion !== "0.4.0" ||
@@ -188,18 +205,23 @@ export function assertLauncherReleasePolicy(input: {
   }
 
   if (input.production) {
+    const updatesEnabled =
+      releasePolicyAllows("updates") &&
+      releasePolicyAllows("artifactDownloads");
     if (
       policy.channel !== "production" ||
-      signature.status !== "signed" ||
+      !cryptographicallySigned ||
       !signature.keyId ||
       policy.controlPlaneOrigin === null ||
       policy.distribution.allowUnsignedDevelopment ||
       policy.distribution.engineManifestKeyIds.length === 0 ||
       policy.distribution.codeSigningCertificateFingerprints.length === 0 ||
-      policy.distribution.updateMetadataOrigin === null ||
-      policy.distribution.updateArtifactOrigin === null ||
-      policy.distribution.embeddedTufRootSha256 === null ||
-      policy.distribution.codeSigningIdentities.length === 0
+      !isLaunchPolicyComplete() ||
+      (updatesEnabled &&
+        (policy.distribution.updateMetadataOrigin === null ||
+          policy.distribution.updateArtifactOrigin === null ||
+          policy.distribution.embeddedTufRootSha256 === null ||
+          policy.distribution.codeSigningIdentities.length === 0))
     ) {
       throw new ReleasePolicyError("production_release_blocked");
     }
@@ -226,13 +248,47 @@ export function assertLauncherReleasePolicy(input: {
   }
 }
 
+const LAUNCH_MODEL_ALIASES = new Set([
+  "goat/muse-spark-1.2-contributor",
+  "goat/deepseek-v4-pro-0813",
+  "goat/gpt-5.6-luna",
+]);
+
+function isLaunchPolicyComplete(): boolean {
+  return (
+    releasePolicyAllows("authentication") &&
+    releasePolicyAllows("hostedInference") &&
+    releasePolicyAllows("modelCatalog") &&
+    releasePolicyAllows("unifiedQuota") &&
+    !releasePolicyAllows("directInference") &&
+    !releasePolicyAllows("ads") &&
+    !releasePolicyAllows("autoMode") &&
+    !releasePolicyAllows("paidBilling") &&
+    releasePolicyAllows("updates") ===
+      releasePolicyAllows("artifactDownloads") &&
+    policy.providers.length > 0 &&
+    policy.providers.every(
+      (provider) =>
+        isValidApprovedProvider(provider) &&
+        provider.executionMode === "hosted" &&
+        LAUNCH_MODEL_ALIASES.has(provider.publicAlias),
+    )
+  );
+}
+
 const DIRECT_PROVIDER_ENVIRONMENT_KEYS: Readonly<
   Record<string, readonly string[]>
 > = {
   ovhcloud: ["OVHCLOUD_API_KEY"],
 };
 
+// Historical aliases remain valid only for compatibility-policy fixtures and
+// retained records. The control plane owns launch model selection.
 const PUBLIC_MODEL_ALIASES = new Set([
+  "goat/muse-spark-1.2-contributor",
+  "goat/deepseek-v4-flash-0731",
+  "goat/deepseek-v4-pro-0813",
+  "goat/gpt-5.6-luna",
   "goat/auto",
   "goat/fast",
   "goat/balanced",

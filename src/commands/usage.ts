@@ -67,38 +67,42 @@ export async function runUsage(options: UsageOptions): Promise<number> {
 }
 
 export function formatUsageSummary(summary: UsageSummaryResponse): string {
-  const lines: string[] = ["GOAT usage"];
-  lines.push(`Tier: ${titleCase(summary.account.tier)}`);
+  const session = summary.session;
+  const remaining = formatPercent(summary.quota.remainingPercent);
+  const lines: string[] = [
+    session
+      ? `GOAT premium sessions — ${formatSessions(session.sessionsRemaining)} remaining`
+      : summary.quota.remainingPercent === null
+        ? "GOAT usage — no active allowance"
+        : `GOAT usage — ${remaining} remaining`,
+  ];
   lines.push(`Status: ${formatStatus(summary.account.status)}`);
-
-  if (summary.quota.allowanceMicrousd === null) {
-    lines.push("Quota: no active allowance");
-  } else {
-    const remaining = formatAmount(summary.quota.remainingMicrousd);
-    const allowance = formatAmount(summary.quota.allowanceMicrousd);
-    const percent = formatRemainingPercent(
-      summary.quota.remainingMicrousd,
-      summary.quota.allowanceMicrousd,
-    );
+  if (session) {
+    lines.push(`Premium time used: ${formatMinutes(session.usedMinutes)}`);
     lines.push(
-      `Quota: ${remaining} of ${allowance} quota units remaining (${percent})`,
+      `Premium time remaining: ${formatMinutes(session.remainingMinutes)}`,
     );
+    if (session.activeSessionStartedAt)
+      lines.push(
+        `Active session started: ${formatUtcMinute(session.activeSessionStartedAt)}`,
+      );
+  } else {
+    lines.push(`Used: ${formatPercent(summary.quota.usedPercent)}`);
+    lines.push(`Committed: ${formatPercent(summary.quota.committedPercent)}`);
   }
 
   if (summary.quota.lowQuota) lines.push("Warning: GOAT quota is low.");
 
-  if (summary.window.nextResetAt) {
-    lines.push(`Next reset: ${formatUtcMinute(summary.window.nextResetAt)}`);
+  if (summary.window.nextUsageExpiresAt) {
+    lines.push(
+      `Next usage expires: ${formatUtcMinute(summary.window.nextUsageExpiresAt)}`,
+    );
   } else if (summary.window.seconds === null) {
-    lines.push("Next reset: no active rolling window");
+    lines.push("Window: no active allowance");
   } else {
-    lines.push("Next reset: after new usage in this window");
-  }
-
-  lines.push(`Usage this window: ${formatBreakdown(summary.usage)}`);
-  lines.push("Recent totals:");
-  for (const item of summary.recent) {
-    lines.push(`  ${item.label}: ${formatBreakdown(item)}`);
+    lines.push(
+      `Window: ${summary.window.kind === "daily" ? "daily" : "rolling 24 hours"}`,
+    );
   }
 
   return `${lines.join("\n")}\n`;
@@ -178,8 +182,23 @@ async function refreshCredentials(
 ): Promise<{ credentials: GoatCredentials } | { error: UsageCommandError }> {
   const result = await options.client.refresh(credentials.refreshToken);
   if (result.status === "authorized") {
+    // A rotated credential set keeps the previously enrolled device
+    // attestation: the control plane refresh response only carries base
+    // credentials, so carry the device fields over or the next inference
+    // request silently loses its attestation (and would fail when
+    // attestation is required). This mirrors the refresh paths in
+    // `refreshStoredCredentials` and `preparePrivacyCredential`.
+    const refreshed = {
+      ...result.credentials,
+      ...(credentials.deviceId && credentials.deviceSecret
+        ? {
+            deviceId: credentials.deviceId,
+            deviceSecret: credentials.deviceSecret,
+          }
+        : {}),
+    };
     try {
-      await options.store.set(result.credentials);
+      await options.store.set(refreshed);
     } catch {
       await discardUnstoredCredential(
         options.client,
@@ -188,7 +207,7 @@ async function refreshCredentials(
       );
       return { error: unavailableError() };
     }
-    return { credentials: result.credentials };
+    return { credentials: refreshed };
   }
   if (result.status === "network_error") return { error: offlineError() };
   if (
@@ -245,38 +264,22 @@ function unavailableError(): UsageCommandError {
   };
 }
 
-function formatBreakdown(value: {
-  regularMicrousd: string;
-  premiumMicrousd: string;
-  totalMicrousd: string;
-}): string {
-  return `${formatAmount(value.regularMicrousd)} regular, ${formatAmount(value.premiumMicrousd)} premium, ${formatAmount(value.totalMicrousd)} total`;
+function formatPercent(value: number | null): string {
+  return value === null || !Number.isInteger(value) || value < 0 || value > 100
+    ? "n/a"
+    : `${value}%`;
 }
 
-function formatAmount(value: string | null): string {
-  if (value === null || !/^\d+$/.test(value)) return "n/a";
-  const raw = BigInt(value);
-  const roundedCents = (raw + 5000n) / 10000n;
-  const whole = roundedCents / 100n;
-  const fraction = (roundedCents % 100n).toString().padStart(2, "0");
-  return `${whole}.${fraction}`;
+function formatSessions(value: number | null): string {
+  return value === null || !Number.isFinite(value) || value < 0
+    ? "n/a"
+    : value.toFixed(1);
 }
 
-function formatRemainingPercent(
-  remainingValue: string | null,
-  allowanceValue: string | null,
-): string {
-  if (
-    remainingValue === null ||
-    allowanceValue === null ||
-    !/^\d+$/.test(remainingValue) ||
-    !/^\d+$/.test(allowanceValue)
-  )
-    return "n/a";
-  const remaining = BigInt(remainingValue);
-  const allowance = BigInt(allowanceValue);
-  if (allowance <= 0n) return "0%";
-  return `${(remaining * 100n) / allowance}%`;
+function formatMinutes(value: number | null): string {
+  return value === null || !Number.isFinite(value) || value < 0
+    ? "n/a"
+    : `${Math.round(value)} minutes`;
 }
 
 function formatUtcMinute(value: string): string {
@@ -297,10 +300,4 @@ function formatStatus(
   if (status === "quota_suspended") return "Quota suspended";
   if (status === "quota_revoked") return "Quota revoked";
   return "Active";
-}
-
-function titleCase(value: string): string {
-  return value.length === 0
-    ? value
-    : `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
 }

@@ -1,0 +1,184 @@
+name: native installer
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build installer (${{ matrix.platform }} / ${{ matrix.architecture }})
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: windows
+            architecture: x64
+            target: x86_64-pc-windows-msvc
+            asset: goat-installer-windows-x64.exe
+          - runner: windows-11-arm
+            platform: windows
+            architecture: arm64
+            target: aarch64-pc-windows-msvc
+            asset: goat-installer-windows-arm64.exe
+          - runner: macos-15-intel
+            platform: macos
+            architecture: x64
+            target: x86_64-apple-darwin
+            asset: goat-installer-macos-x64
+          - runner: macos-latest
+            platform: macos
+            architecture: arm64
+            target: aarch64-apple-darwin
+            asset: goat-installer-macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node for release pin resolution
+        # No cache input configured, so setup-node performs no cache restore;
+        # zizmor cannot see through the action's default-cache heuristic.
+        # zizmor: ignore[cache-poisoning]
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning]
+        with:
+          node-version: "24.16.0"
+
+      - name: Resolve engine and policy pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE' >> "$GITHUB_ENV"
+          const fs = require("node:fs");
+          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const launcherVersion = packageJson.version;
+          if (!/^\d+\.\d+\.\d+$/.test(launcherVersion)) {
+            throw new Error("native installer launcher version must be an exact stable semver");
+          }
+          if (process.env.GITHUB_REF_NAME?.startsWith("v") && process.env.GITHUB_REF_NAME !== `v${launcherVersion}`) {
+            throw new Error("native installer tag must match the goatcli package version");
+          }
+          const names = [
+            "goat-engine-windows-x64",
+            "goat-engine-windows-arm64",
+            "goat-engine-darwin-x64",
+            "goat-engine-darwin-arm64",
+          ];
+          const versions = names.map((name) => packageJson.optionalDependencies?.[name]);
+          if (versions.some((version) => typeof version !== "string" || version !== versions[0])) {
+            throw new Error("native installer engine package pins are inconsistent");
+          }
+          const versionParts = versions[0].split(".");
+          if (versionParts.length !== 3 || versionParts.some((part) => part.length === 0 || [...part].some((character) => character < "0" || character > "9"))) {
+            throw new Error("native installer engine version must be an exact stable semver");
+          }
+          const source = fs.readFileSync("src/privacy/release-policy.generated.ts", "utf8");
+          const marker = source.indexOf("GOAT_RELEASE_POLICY_SOURCE_SHA256");
+          const policy = marker < 0 ? undefined : source.slice(marker).match(/[a-f0-9]{64}/)?.[0];
+          if (!policy) throw new Error("native installer release policy digest is missing");
+          console.log(`GOAT_LAUNCHER_VERSION=${launcherVersion}`);
+          console.log(`GOAT_ENGINE_VERSION=${versions[0]}`);
+          console.log(`GOAT_RELEASE_POLICY_SOURCE_SHA256=${policy}`);
+          NODE
+
+      - name: Setup pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --target "${{ matrix.target }}"
+          rustup default 1.88.0
+          rustc --version --verbose
+          cargo --version
+
+      - name: Test native installer
+        run: cargo test --manifest-path native/installer/Cargo.toml --locked
+
+      - name: Verify pinned engine packages are published
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { execFileSync } = require("node:child_process");
+          const names = [
+            "goat-engine-windows-x64",
+            "goat-engine-windows-arm64",
+            "goat-engine-darwin-x64",
+            "goat-engine-darwin-arm64",
+          ];
+          for (const name of names) {
+            const result = execFileSync("npm", ["view", `${name}@${process.env.GOAT_ENGINE_VERSION}`, "version", "--json"], { encoding: "utf8" }).trim();
+            if (JSON.parse(result) !== process.env.GOAT_ENGINE_VERSION) {
+              throw new Error(`${name}@${process.env.GOAT_ENGINE_VERSION} is not published`);
+            }
+          }
+          NODE
+
+      - name: Require production trust material for release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GOAT_ENGINE_SIGNING_PUBLIC_KEY_BASE64: ${{ secrets.GOAT_ENGINE_SIGNING_PUBLIC_KEY_BASE64 }}
+        shell: bash
+        run: |
+          if [[ -z "$GOAT_ENGINE_SIGNING_PUBLIC_KEY_BASE64" ]]; then
+            echo "GOAT_ENGINE_SIGNING_PUBLIC_KEY_BASE64 is required for release assets" >&2
+            exit 1
+          fi
+
+      - name: Build native installer
+        env:
+          GOAT_ENGINE_SIGNING_PUBLIC_KEY_BASE64: ${{ secrets.GOAT_ENGINE_SIGNING_PUBLIC_KEY_BASE64 }}
+        run: cargo build --manifest-path native/installer/Cargo.toml --release --locked --target "${{ matrix.target }}"
+
+      - name: Stage installer asset
+        shell: bash
+        run: cp "native/installer/target/${{ matrix.target }}/release/goat-native-installer${{ runner.os == 'Windows' && '.exe' || '' }}" "${{ matrix.asset }}"
+
+      - name: Verify installer asset
+        shell: bash
+        run: |
+          test -f "${{ matrix.asset }}"
+          sha256sum "${{ matrix.asset }}" || shasum -a 256 "${{ matrix.asset }}"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download installer artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: installers
+          merge-multiple: true
+
+      - name: Create or update GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --generate-notes
+          fi
+          gh release upload "$tag" installers/* --clobber

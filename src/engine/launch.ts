@@ -18,6 +18,7 @@ import {
 import {
   getAppDataDir,
   getEnginePath,
+  getNpmEnginePath,
   toResolvedEngine,
   type EnginePathOptions,
 } from "../utils/paths.js";
@@ -43,6 +44,14 @@ import { approvedEngineEnvironmentKeys } from "../privacy/release-policy.js";
 import type { ActivationSecurityPolicy } from "../update/activation.js";
 import { UpdateError } from "../update/errors.js";
 import { inspectInstalledEngine } from "../update/installed.js";
+import {
+  isWindowsPrivacyPipeSetupError,
+  loadWindowsPrivacySpawner,
+  windowsPrivacySpawnUnavailableError,
+  type LoadWindowsPrivacySpawner,
+} from "./windows-privacy-spawn.js";
+
+export type { LoadWindowsPrivacySpawner } from "./windows-privacy-spawn.js";
 
 export interface EngineLaunchResult {
   exitCode: number;
@@ -65,6 +74,36 @@ export type SpawnEngine = (
   },
 ) => ChildProcess;
 
+interface SelectEngineSpawnerOptions {
+  readonly platform: ValidatedEngine["resolved"]["platform"];
+  readonly privacyIpc: boolean;
+  readonly spawnEngine?: SpawnEngine;
+  readonly loadWindowsPrivacySpawner?: LoadWindowsPrivacySpawner;
+  readonly defaultSpawner?: SpawnEngine;
+}
+
+/** @internal Exported for selector tests; not part of the package entry point. */
+export async function selectEngineSpawner(
+  options: SelectEngineSpawnerOptions,
+): Promise<SpawnEngine> {
+  if (options.spawnEngine) return options.spawnEngine;
+  if (options.platform !== "win32" || !options.privacyIpc) {
+    return options.defaultSpawner ?? spawn;
+  }
+
+  try {
+    const selected = await (
+      options.loadWindowsPrivacySpawner ?? loadWindowsPrivacySpawner
+    )();
+    if (typeof selected !== "function") {
+      throw windowsPrivacySpawnUnavailableError();
+    }
+    return selected;
+  } catch {
+    throw windowsPrivacySpawnUnavailableError();
+  }
+}
+
 export interface ProcessLike {
   platform: NodeJS.Platform;
   arch: string;
@@ -84,6 +123,9 @@ export interface PrivacyLaunchCredential {
   /** Caller-owned input; launch copies and zeroizes only its private IPC copy. */
   readonly accessToken: Uint8Array;
   readonly expiresAtUnixMs: number;
+  /** Per-device attestation enrollment (v0.5.2). Optional. */
+  readonly deviceId?: string;
+  readonly deviceSecret?: Uint8Array;
 }
 
 interface PrivacyIpcLaunchOptions {
@@ -92,6 +134,8 @@ interface PrivacyIpcLaunchOptions {
   readonly credentialStore: CredentialStoreStatus;
   readonly credential?: Uint8Array;
   readonly credentialExpiresAtUnixMs?: number;
+  /** `<deviceId>:<deviceSecret>` blob carried in the session_start frame. */
+  readonly attestation?: Uint8Array;
   readonly credentialProvider?: () => Promise<
     PrivacyLaunchCredential | undefined
   >;
@@ -104,6 +148,7 @@ export interface LaunchEngineOptions
   args: readonly string[];
   cwd?: string;
   spawnEngine?: SpawnEngine;
+  loadWindowsPrivacySpawner?: LoadWindowsPrivacySpawner;
   processLike?: ProcessLike;
   processTerminator?: ProcessTerminatorCommand;
   processGroupTerminator?: ProcessGroupTerminator;
@@ -113,6 +158,7 @@ export interface LaunchEngineOptions
   privacyCredentialProvider?: () => Promise<
     PrivacyLaunchCredential | undefined
   >;
+  /** @deprecated Windows privacy IPC no longer depends on the Node minor. */
   nodeVersion?: string;
 }
 
@@ -178,9 +224,6 @@ export async function launchEngine(
   }
 
   const privacyMode = getPrivacyIpcMode(options.args);
-  if (privacyMode !== "none" && processLike.platform === "win32") {
-    requireWindowsIpcRuntime(options.nodeVersion ?? process.versions.node);
-  }
   validatePrivacyCredential(privacyMode, options.privacyCredential);
 
   const cwd = options.cwd ?? processLike.cwd();
@@ -279,6 +322,7 @@ export async function launchEngine(
       cwd,
       environment: engineEnvironment,
       spawnEngine: options.spawnEngine,
+      loadWindowsPrivacySpawner: options.loadWindowsPrivacySpawner,
       processLike,
       processTerminator: options.processTerminator,
       processGroupTerminator: options.processGroupTerminator,
@@ -298,6 +342,14 @@ export async function launchEngine(
               credential: options.privacyCredential?.accessToken,
               credentialExpiresAtUnixMs:
                 options.privacyCredential?.expiresAtUnixMs,
+              attestation:
+                options.privacyCredential?.deviceId &&
+                options.privacyCredential.deviceSecret
+                  ? encodeAttestationBlob(
+                      options.privacyCredential.deviceId,
+                      options.privacyCredential.deviceSecret,
+                    )
+                  : undefined,
               credentialProvider: options.privacyCredentialProvider,
               launcherPid: processLike.pid,
             },
@@ -342,16 +394,50 @@ function resolveLegacyEngine(
   readonly engineIntegrity: EngineIntegrityStatus;
   readonly checksum: string;
 } {
-  const resolved = toResolvedEngine(
-    getEnginePath({
-      env: options.env ?? processLike.env,
-      platform: options.platform ?? processLike.platform,
-      architecture: options.architecture ?? processLike.arch,
-      appDataDir: options.appDataDir,
-      homeDir: options.homeDir,
-      releaseChannel: options.releaseChannel,
-    }),
-  );
+  const pathOptions: EnginePathOptions = {
+    env: options.env ?? processLike.env,
+    platform: options.platform ?? processLike.platform,
+    architecture: options.architecture ?? processLike.arch,
+    appDataDir: options.appDataDir,
+    homeDir: options.homeDir,
+    releaseChannel: options.releaseChannel,
+    npmEnginePackageResolver: options.npmEnginePackageResolver,
+  };
+  const resolved = toResolvedEngine(getEnginePath(pathOptions));
+  try {
+    return validateLegacyResolvedEngine(resolved, options);
+  } catch (error) {
+    // A damaged legacy app-data installation should not hide a complete,
+    // trusted npm engine installed by the current launcher. Never apply this
+    // fallback to beta/dev channels or to an already-selected npm package.
+    if (
+      resolved.source !== "local-install" ||
+      (options.releaseChannel ?? "stable") !== "stable"
+    ) {
+      throw error;
+    }
+    const npmResolution = getNpmEnginePath({
+      ...pathOptions,
+      releaseChannel: "stable",
+    });
+    if (!npmResolution || npmResolution.path === resolved.executablePath) {
+      throw error;
+    }
+    return validateLegacyResolvedEngine(
+      toResolvedEngine(npmResolution),
+      options,
+    );
+  }
+}
+
+function validateLegacyResolvedEngine(
+  resolved: ResolvedEngine,
+  options: LaunchEngineOptions,
+): {
+  readonly resolved: ResolvedEngine;
+  readonly engineIntegrity: EngineIntegrityStatus;
+  readonly checksum: string;
+} {
   const validated = validateEngine(resolved, options.launcherVersion, {
     fs: options.fs,
     trustPolicy: options.trustPolicy,
@@ -370,6 +456,7 @@ export async function launchValidatedEngine(
     cwd: string;
     environment?: NodeJS.ProcessEnv;
     spawnEngine?: SpawnEngine;
+    loadWindowsPrivacySpawner?: LoadWindowsPrivacySpawner;
     processLike?: ProcessLike;
     processTerminator?: ProcessTerminatorCommand;
     processGroupTerminator?: ProcessGroupTerminator;
@@ -379,7 +466,17 @@ export async function launchValidatedEngine(
   },
 ): Promise<EngineLaunchResult> {
   const processLike = options.processLike ?? process;
-  const spawnEngine = options.spawnEngine ?? spawn;
+  // Preserve the existing synchronous setup behavior for injected and plain
+  // spawners. Only resolving the optional native Windows binding may yield.
+  const spawnEngine = options.spawnEngine
+    ? options.spawnEngine
+    : engine.platform === "win32" && options.privacyIpc
+      ? await selectEngineSpawner({
+          platform: engine.platform,
+          privacyIpc: true,
+          loadWindowsPrivacySpawner: options.loadWindowsPrivacySpawner,
+        })
+      : spawn;
   const platform = getPlatformAdapter(engine.platform);
   let containment:
     | {
@@ -388,7 +485,8 @@ export async function launchValidatedEngine(
         terminate(): void;
       }
     | undefined;
-  const useNativeContainment = processLike === process && spawnEngine === spawn;
+  const useNativeContainment =
+    processLike === process && options.spawnEngine === undefined;
   if (useNativeContainment) {
     try {
       containment =
@@ -429,8 +527,21 @@ export async function launchValidatedEngine(
       // descendant tree for fail-safe cleanup.
       detached: engine.platform === "darwin" || engine.platform === "win32",
     });
-  } catch {
+  } catch (error) {
     await containment?.release().catch(() => undefined);
+    if (
+      error instanceof EngineContractError &&
+      error.code === "GOAT_WINDOWS_PRIVACY_SPAWN_UNAVAILABLE"
+    ) {
+      throw error;
+    }
+    if (isWindowsPrivacyPipeSetupError(error)) {
+      throw new EngineContractError(
+        "GOAT_PRIVACY_IPC_FAILED",
+        "The GOAT privacy session could not be established.",
+        "Run `goat doctor`.",
+      );
+    }
     throw new EngineContractError(
       "GOAT_ENGINE_SPAWN_FAILED",
       "The GOAT engine could not be started.",
@@ -576,6 +687,7 @@ export async function launchValidatedEngine(
       const transport = childPipeTransport(child);
       closePendingTransport = () => transport.close?.();
       let providerCredentialCopy: Uint8Array | undefined;
+      let attestationCopy: Uint8Array | undefined;
       let credential = privacyIpc.credential;
       let credentialExpiresAtUnixMs = privacyIpc.credentialExpiresAtUnixMs;
       let credentialStore = privacyIpc.credentialStore;
@@ -590,6 +702,14 @@ export async function launchValidatedEngine(
         credential = providerCredentialCopy;
         credentialExpiresAtUnixMs = providedCredential?.expiresAtUnixMs;
         credentialStore = providedCredential ? "available" : "unavailable";
+        if (providedCredential?.deviceId && providedCredential.deviceSecret) {
+          attestationCopy = encodeAttestationBlob(
+            providedCredential.deviceId,
+            providedCredential.deviceSecret,
+          );
+        }
+      } else {
+        attestationCopy = privacyIpc.attestation?.slice();
       }
 
       const credentialCopy = credential?.slice();
@@ -602,12 +722,14 @@ export async function launchValidatedEngine(
           enginePid: child.pid!,
           credential: credentialCopy,
           credentialExpiresAtUnixMs,
+          attestation: attestationCopy,
           signal: ipcLifetime.signal,
         });
         closePendingTransport = undefined;
       } finally {
         zeroizeLauncherIpcBytes(credentialCopy);
         zeroizeLauncherIpcBytes(providerCredentialCopy);
+        zeroizeLauncherIpcBytes(attestationCopy);
       }
     })().catch(() => {
       if (privacyIpc.mode === "lazy") {
@@ -819,21 +941,32 @@ function validateProvidedPrivacyCredential(
       "Run `goat login`.",
     );
   }
-}
-
-function requireWindowsIpcRuntime(version: string): void {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-|$)/.exec(version);
-  const supported =
-    match !== null &&
-    (Number(match[1]) > 24 ||
-      (Number(match[1]) === 24 &&
-        (Number(match[2]) > 16 ||
-          (Number(match[2]) === 16 && Number(match[3]) >= 0))));
-  if (!supported) {
+  const hasAttestation =
+    credential.deviceId !== undefined || credential.deviceSecret !== undefined;
+  if (
+    hasAttestation &&
+    (typeof credential.deviceId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        credential.deviceId,
+      ) ||
+      !(credential.deviceSecret instanceof Uint8Array) ||
+      credential.deviceSecret.byteLength !== 43)
+  ) {
     throw new EngineContractError(
-      "GOAT_NODE_VERSION_UNSUPPORTED",
-      "This Node.js version cannot safely launch GOAT privacy IPC on Windows.",
-      "Install Node.js 24.16.0 or newer.",
+      "GOAT_PRIVACY_IPC_FAILED",
+      "The GOAT privacy attestation is invalid.",
+      "Run `goat login` again.",
     );
   }
+}
+
+function encodeAttestationBlob(
+  deviceId: string,
+  deviceSecret: Uint8Array,
+): Uint8Array {
+  const prefix = new TextEncoder().encode(`${deviceId}:`);
+  const blob = new Uint8Array(prefix.byteLength + deviceSecret.byteLength);
+  blob.set(prefix);
+  blob.set(deviceSecret, prefix.byteLength);
+  return blob;
 }

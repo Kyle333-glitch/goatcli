@@ -129,6 +129,48 @@ test("sends credential update, clear, and end with ordered ACKs", async () => {
   transport.writeReferences.forEach(assertZeroed);
 });
 
+test("carries the per-device attestation blob in the session_start frame", async () => {
+  const transport = new EngineHarness();
+  const deviceId = "123e4567-e89b-12d3-a456-426614174000";
+  const deviceSecret = new TextEncoder().encode("Z".repeat(43));
+  const attestation = new TextEncoder().encode(
+    `${deviceId}:${new TextDecoder().decode(deviceSecret)}`,
+  );
+  const session = await openLauncherIpcSession({
+    ...baseOptions(transport),
+    attestation,
+  });
+
+  const request = decodeRequest(transport.writes[1]!);
+  assert.equal(request.header.attestation_length, attestation.byteLength);
+  assert.deepEqual(request.attestation, attestation);
+  session.dispose();
+  transport.writeReferences.forEach(assertZeroed);
+});
+
+test("rejects malformed attestation blobs before writing any frame", async () => {
+  const badAttestations = [
+    new TextEncoder().encode(
+      "not-a-uuid:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    ),
+    new TextEncoder().encode("123e4567-e89b-12d3-a456-426614174000"),
+    new TextEncoder().encode(
+      "123e4567-e89b-12d3-a456-426614174000:not-a-secret",
+    ),
+    new TextEncoder().encode(
+      `123e4567-e89b-12d3-a456-426614174000:${"A".repeat(92)}`,
+    ),
+  ];
+  for (const attestation of badAttestations) {
+    const transport = new EngineHarness();
+    await assert.rejects(
+      () => openLauncherIpcSession({ ...baseOptions(transport), attestation }),
+      hasCode("LAUNCHER_IPC_CREDENTIAL_INVALID"),
+    );
+    assert.equal(transport.writes.length, 0);
+  }
+});
+
 test("omits optional credential fields for unauthenticated diagnostic preview", async () => {
   const transport = new EngineHarness();
   const session = await openLauncherIpcSession({
@@ -502,6 +544,7 @@ function baseOptions(transport: LauncherIpcTransport) {
 function decodeRequest(frame: Uint8Array): {
   header: { [key: string]: unknown };
   credential: Uint8Array;
+  attestation: Uint8Array;
 } {
   const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
   const headerLength = view.getUint32(0, false);
@@ -509,12 +552,15 @@ function decodeRequest(frame: Uint8Array): {
   const header = JSON.parse(
     new TextDecoder().decode(frame.subarray(6, 6 + headerLength)),
   ) as { [key: string]: unknown };
+  const attestationLength =
+    header.message_type === "session_start"
+      ? ((header.attestation_length as number | undefined) ?? 0)
+      : 0;
+  const credentialEnd = 6 + headerLength + credentialLength;
   return {
     header,
-    credential: frame.slice(
-      6 + headerLength,
-      6 + headerLength + credentialLength,
-    ),
+    credential: frame.slice(6 + headerLength, credentialEnd),
+    attestation: frame.slice(credentialEnd, credentialEnd + attestationLength),
   };
 }
 

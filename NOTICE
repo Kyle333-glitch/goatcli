@@ -2,10 +2,25 @@ goatcli
 Copyright (c) 2026 GOAT Contributors
 
 The MIT license in LICENSE applies only to the public goatcli launcher source.
+The public goatcli-windows-spawn packages and their launcher-native Windows
+binaries are part of that public launcher and are also distributed under MIT.
 The private goat-engine, the private goat-control-plane, and distributed GOAT
 engine binaries are separate works and are not covered by this MIT license.
 No license to those separate works is granted by this package.
 
 Third-party packages used by goatcli remain subject to their own license terms.
-Their package metadata and license files are available through the npm dependency
-tree installed with goatcli.
+Third-party Rust crates used by the native Windows launcher component likewise
+remain subject to their own license terms. Their package metadata and license
+files are available through the npm dependency tree and corresponding source
+distribution.
+
+The native Windows component uses napi, napi-derive, and napi-build from the
+napi-rs project under the MIT license, and windows-sys/windows-link from the
+windows-rs project under the MIT or Apache-2.0 licenses. Exact resolved versions
+and transitive dependency metadata are recorded in native/windows-spawn/Cargo.lock.
+
+The standalone native installer in native/installer uses ed25519-dalek and
+serde_json under their respective MIT/Apache-2.0 or MIT license terms. Exact
+resolved versions and transitive dependency metadata are recorded in
+native/installer/Cargo.lock. It invokes only operating-system tools already
+documented for its platform (PowerShell/curl and tar).

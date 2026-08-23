@@ -1,6 +1,9 @@
 node_modules/
 dist/
 build/
+/native/windows-spawn/target/
+/native/installer/target/
+/native/windows-spawn/npm/*/*.node
 .env
 .env.*
 *.log

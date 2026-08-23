@@ -65,10 +65,7 @@ for (const signal of nativeTerminationSignals) {
     `native containment removes descendants for real ${signal}`,
     { timeout: 60_000 },
     async (context) => {
-      if (!supportedPlatform()) {
-        context.skip("native containment runs only on Windows and macOS");
-        return;
-      }
+      if (!supportedPlatform(context)) return;
       const consoleSignal: "CTRL_C" | "CTRL_BREAK" | undefined =
         process.platform === "win32" &&
         (signal === "SIGINT" || signal === "SIGBREAK")
@@ -92,10 +89,7 @@ test(
   "native containment closes descendants after launcher exit and engine crash",
   { timeout: 90_000 },
   async (context) => {
-    if (!supportedPlatform()) {
-      context.skip("native containment runs only on Windows and macOS");
-      return;
-    }
+    if (!supportedPlatform(context)) return;
 
     const launcherExit = await startTree("normal");
     try {
@@ -154,10 +148,7 @@ test(
   "native spawn and IPC failures fail closed without touching the sentinel",
   { timeout: 90_000 },
   async (context) => {
-    if (!supportedPlatform()) {
-      context.skip("native containment runs only on Windows and macOS");
-      return;
-    }
+    if (!supportedPlatform(context)) return;
 
     const spawnFailure = await startTree("spawn-failure", false);
     try {
@@ -434,12 +425,8 @@ function rolePid(run: TreeRun, role: FixtureRole): number {
       candidate.role === role &&
       Number.isSafeInteger(candidate.pid),
   );
-  assert.ok(message, "missing fixture PID evidence for " + role);
-  const pid = message.pid;
-  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) {
-    throw new Error("invalid fixture PID for " + role);
-  }
-  return pid;
+  assert.ok(message?.pid && message.pid > 0, "missing fixture PID for " + role);
+  return message.pid;
 }
 
 function treePids(run: TreeRun): number[] {
@@ -469,8 +456,7 @@ async function assertTreeStopped(run: TreeRun): Promise<void> {
 
 function assertSentinelAlive(run: TreeRun): void {
   const sentinelPid = run.sentinel.child.pid;
-  assert.ok(sentinelPid, "missing sentinel PID");
-  assert.ok(sentinelPid > 0, "sentinel PID is not positive");
+  assert.ok(sentinelPid && sentinelPid > 0);
   assert.equal(isProcessAlive(sentinelPid), true);
   assert.equal(run.sentinel.child.exitCode, null);
   assert.equal(run.sentinel.child.signalCode, null);
@@ -588,8 +574,14 @@ function fixtureEnvironment(): NodeJS.ProcessEnv {
   return result;
 }
 
-function supportedPlatform(): boolean {
-  return process.platform === "win32" || process.platform === "darwin";
+function supportedPlatform(context: {
+  skip(message?: string): void;
+}): "win32" | "darwin" | undefined {
+  if (process.platform !== "win32" && process.platform !== "darwin") {
+    context.skip("native containment runs only on Windows and macOS");
+    return undefined;
+  }
+  return process.platform;
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {

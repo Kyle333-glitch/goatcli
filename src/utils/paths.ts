@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import {
   EngineContractError,
   type GoatArchitecture,
@@ -6,6 +7,10 @@ import {
   type ResolvedEngine,
 } from "../engine/contract.js";
 import { FALLBACK_LAUNCHER_VERSION } from "../version.js";
+import {
+  resolveNpmEnginePackage,
+  type NpmEnginePackageResolution,
+} from "../engine/npm-package.js";
 import {
   getEngineExecutableName,
   getPathModule,
@@ -18,7 +23,7 @@ import {
 export interface EngineResolution {
   path: string | null;
   manifestPath: string | null;
-  source: "local-install" | "none";
+  source: "local-install" | "npm-package" | "none";
   releaseChannel: ReleaseChannel;
   platform: GoatPlatform | null;
   architecture: GoatArchitecture | null;
@@ -36,6 +41,11 @@ export interface EnginePathOptions extends AppPathOptions {
   architecture?: string;
   appDataDir?: string;
   releaseChannel?: ReleaseChannel;
+  /** Test/development injection; production CLI never supplies this. */
+  npmEnginePackageResolver?: (
+    platform: GoatPlatform,
+    architecture: GoatArchitecture,
+  ) => NpmEnginePackageResolution | null;
 }
 
 export {
@@ -147,9 +157,37 @@ export function getEnginePath(
     "bin",
     getEngineExecutableName(platform),
   );
+  const manifestPath = pathModule.join(installRoot, "goat-engine.json");
+
+  // An existing app-data installation created by `goat update` takes
+  // precedence and is still validated below. Otherwise use the platform
+  // package installed alongside the launcher by npm. Keeping the package path
+  // direct avoids an install lifecycle script and preserves manifest/checksum
+  // validation.
+  if (fs.existsSync(executablePath) || fs.existsSync(manifestPath)) {
+    return {
+      path: executablePath,
+      manifestPath,
+      source: "local-install",
+      releaseChannel,
+      platform,
+      architecture,
+      developmentOverride: false,
+      error: null,
+    };
+  }
+
+  const npmEnginePath = getNpmEnginePath({
+    ...options,
+    platform,
+    architecture,
+    releaseChannel,
+  });
+  if (npmEnginePath) return npmEnginePath;
+
   return {
     path: executablePath,
-    manifestPath: pathModule.join(installRoot, "goat-engine.json"),
+    manifestPath,
     source: "local-install",
     releaseChannel,
     platform,
@@ -159,20 +197,67 @@ export function getEnginePath(
   };
 }
 
+export function getNpmEnginePath(
+  options: EnginePathOptions = {},
+): EngineResolution | null {
+  const platform = getSupportedPlatform(
+    options.platform ?? getRuntimePlatform(),
+  );
+  const architecture = getSupportedArchitecture(
+    options.architecture ?? getRuntimeArchitecture(),
+  );
+  const releaseChannel = options.releaseChannel ?? "stable";
+  if (!platform || !architecture || releaseChannel !== "stable") return null;
+
+  const npmEngine = getNpmEnginePackageResolution({
+    ...options,
+    platform,
+    architecture,
+    releaseChannel,
+  });
+  if (!npmEngine) return null;
+  return {
+    path: npmEngine.executablePath,
+    manifestPath: npmEngine.manifestPath,
+    source: "npm-package",
+    releaseChannel,
+    platform,
+    architecture,
+    developmentOverride: false,
+    error: null,
+  };
+}
+
+function getNpmEnginePackageResolution(options: {
+  platform: GoatPlatform;
+  architecture: GoatArchitecture;
+  releaseChannel: ReleaseChannel;
+  npmEnginePackageResolver?: EnginePathOptions["npmEnginePackageResolver"];
+}): NpmEnginePackageResolution | null {
+  if (options.releaseChannel !== "stable") return null;
+  return (
+    options.npmEnginePackageResolver?.(
+      options.platform,
+      options.architecture,
+    ) ?? resolveNpmEnginePackage(options.platform, options.architecture)
+  );
+}
+
 export function toResolvedEngine(resolution: EngineResolution): ResolvedEngine {
   if (resolution.error) throw resolution.error;
   if (!resolution.path || !resolution.platform || !resolution.architecture) {
     throw new EngineContractError(
       "GOAT_ENGINE_MISSING",
       "GOAT engine executable is not resolved for this platform.",
-      "Install the GOAT engine locally, then run goat doctor to verify the installation.",
+      "Reinstall GOAT with `npm install -g goatcli`, then run goat doctor to verify the installation.",
     );
   }
 
   return {
     executablePath: resolution.path,
     manifestPath: resolution.manifestPath,
-    source: "local-install",
+    source:
+      resolution.source === "npm-package" ? "npm-package" : "local-install",
     releaseChannel: resolution.releaseChannel,
     platform: resolution.platform,
     architecture: resolution.architecture,

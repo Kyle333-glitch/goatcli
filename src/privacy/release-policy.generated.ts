@@ -1,7 +1,7 @@
 // Generated from goat-release-policy/releases/v0.4.0/production-policy.json.
 // Do not edit approval-dependent values in this repository.
 
-export const GOAT_RELEASE_POLICY_SOURCE_SHA256 = "e0ca134f594731fd608dc235a846b538c7a58f1f860f7706f1e529a4544f605d"
+export const GOAT_RELEASE_POLICY_SOURCE_SHA256 = "ca4ec68806c228af90b965b98b2071f9129d175ea6f7c083078c6f8d0d1a4295"
 
 export const GOAT_RELEASE_POLICY = {
   "schemaVersion": 1,
@@ -10,11 +10,18 @@ export const GOAT_RELEASE_POLICY = {
   "policyRevision": 1,
   "controlPlaneOrigin": null,
   "features": {
+    "authentication": false,
     "optionalTelemetry": false,
     "remoteDiagnostics": false,
     "hostedInference": false,
     "directInference": false,
+    "modelCatalog": false,
+    "unifiedQuota": false,
+    "referrals": false,
     "sponsors": false,
+    "ads": false,
+    "autoMode": false,
+    "paidBilling": false,
     "updates": false,
     "artifactDownloads": false,
     "externalIntegrations": false

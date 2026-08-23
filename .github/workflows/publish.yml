@@ -1,0 +1,285 @@
+name: publish
+
+# Release gating:
+# - Tag pushes verify that the tag version matches package.json before
+#   publishing (see the "Verify tag matches package version" step).
+# - workflow_dispatch has no tag, so it publishes whatever version
+#   package.json declares. scripts/verify-package.mjs validates semver and all
+#   four exact-version package relationships. A retry skips an existing
+#   package only when its registry integrity equals the staged tarball.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-native:
+    name: build native (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: x64
+            target: x86_64-pc-windows-msvc
+            package: goatcli-windows-spawn-win32-x64-msvc
+            package_dir: win32-x64-msvc
+          - os: windows-11-arm
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+            package: goatcli-windows-spawn-win32-arm64-msvc
+            package_dir: win32-arm64-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        # No cache input configured, so setup-node performs no cache restore;
+        # zizmor cannot see through the action's default-cache heuristic.
+        # zizmor: ignore[cache-poisoning]
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning]
+        with:
+          node-version: "24.16.0"
+
+      - name: Setup Bun for native privacy IPC
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14"
+          no-cache: true
+
+      - name: Setup pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --target "${{ matrix.target }}"
+          rustup default 1.88.0
+          rustc --version --verbose
+          cargo --version
+
+      - name: Install dependencies
+        # Engine packages are published by the engine release workflow, not by
+        # this native-build job. Resolving into the lockfile first tolerates an
+        # absent optional engine package while still installing the local
+        # native workspaces from locked versions.
+        run: |
+          npm install --package-lock-only --ignore-scripts --force --include=optional
+          npm ci --ignore-scripts --force
+
+      - name: Check and test native Windows spawner
+        run: npm run native:test
+        timeout-minutes: 15
+
+      - name: Build native package artifact
+        shell: bash
+        run: |
+          npm run native:build -- --release --target "${{ matrix.target }}" --output-dir "./native/windows-spawn/npm/${{ matrix.package_dir }}"
+        timeout-minutes: 15
+
+      - name: Exercise release-style native binding
+        run: npm run test:platform-e2e
+        timeout-minutes: 10
+
+      - name: Verify native package artifact
+        run: npm run verify:windows-spawn-packages -- --native-package "${{ matrix.package }}"
+        timeout-minutes: 10
+
+      - name: Require exactly one native binary
+        shell: pwsh
+        run: |
+          $directory = Resolve-Path "native/windows-spawn/npm/${{ matrix.package_dir }}"
+          $binaries = @(Get-ChildItem -LiteralPath $directory -File -Filter "*.node")
+          if ($binaries.Count -ne 1) {
+            throw "Expected exactly one native binary for ${{ matrix.package }}; found $($binaries.Count)"
+          }
+
+      - name: Upload native binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.package }}
+          path: native/windows-spawn/npm/${{ matrix.package_dir }}/*.node
+          if-no-files-found: error
+          retention-days: 2
+
+  publish:
+    needs: build-native
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to mint the Sigstore OIDC token used for npm provenance
+      # (`publishConfig.provenance: true` in package.json).
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        # No cache input configured, so setup-node performs no cache restore;
+        # zizmor cannot see through the action's default-cache heuristic.
+        # zizmor: ignore[cache-poisoning]
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning]
+        with:
+          node-version: "24.16.0"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [[ "$tag_version" != "$pkg_version" ]]; then
+            echo "Tag version (${tag_version}) does not match package.json version (${pkg_version})" >&2
+            exit 1
+          fi
+
+      - name: Verify platform engine packages are published
+        shell: bash
+        run: |
+          set -euo pipefail
+          engine_version="$(node -p "require('./package.json').optionalDependencies['goat-engine-windows-x64']")"
+          for name in \
+            goat-engine-windows-x64 \
+            goat-engine-windows-arm64 \
+            goat-engine-darwin-x64 \
+            goat-engine-darwin-arm64; do
+            published_version="$(npm view "$name@$engine_version" version)"
+            if [[ "$published_version" != "$engine_version" ]]; then
+              echo "Published $name version ($published_version) does not match $engine_version" >&2
+              exit 1
+            fi
+          done
+
+      - name: Verify signed platform engine tarballs
+        run: node ./scripts/verify-engine-packages.mjs
+        timeout-minutes: 10
+
+      - name: Resolve and pin published engine package integrity
+        # The launcher lockfile cannot contain registry integrity values until
+        # the separately released engine packages exist. Resolve them only
+        # after verifying those exact signed tarballs, then install from the
+        # generated lockfile below.
+        run: npm install --package-lock-only --ignore-scripts --force --include=optional
+
+      - name: Install dependencies
+        # --force only permits both CPU-specific source workspaces to coexist;
+        # their published os/cpu metadata and artifact checks remain strict.
+        run: npm ci --ignore-scripts --force
+
+      - name: Download x64 native binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: goatcli-windows-spawn-win32-x64-msvc
+          path: native/windows-spawn/npm/win32-x64-msvc
+
+      - name: Download ARM64 native binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: goatcli-windows-spawn-win32-arm64-msvc
+          path: native/windows-spawn/npm/win32-arm64-msvc
+
+      - name: Check formatting
+        run: npm run format:check
+        timeout-minutes: 5
+
+      - name: Typecheck
+        run: npm run typecheck
+        timeout-minutes: 5
+
+      - name: Verify package artifact
+        run: npm run verify:package
+        timeout-minutes: 10
+
+      - name: Verify both native package artifacts
+        run: npm run verify:windows-spawn-packages
+        timeout-minutes: 10
+
+      # Platform packages must exist before the wrapper, and the wrapper must
+      # exist before goatcli. A retried workflow may skip an existing package
+      # only when the registry integrity exactly matches the staged tarball.
+      - name: Publish verified packages in dependency order
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="$RUNNER_TEMP/goatcli-release-packages"
+          mkdir -p "$staging"
+          version="$(node -p "require('./package.json').version")"
+
+          names=(
+            goatcli-windows-spawn-win32-x64-msvc
+            goatcli-windows-spawn-win32-arm64-msvc
+            goatcli-windows-spawn
+            goatcli
+          )
+          workspaces=(
+            goatcli-windows-spawn-win32-x64-msvc
+            goatcli-windows-spawn-win32-arm64-msvc
+            goatcli-windows-spawn
+            ""
+          )
+          archives=()
+          integrities=()
+          registry_states=()
+
+          # Stage every exact tarball before consulting or changing registry
+          # state, so a conflicting later component cannot cause a partial
+          # release of earlier components.
+          for index in "${!names[@]}"; do
+            name="${names[$index]}"
+            workspace="${workspaces[$index]}"
+            pack_json=""
+            if [[ -n "$workspace" ]]; then
+              pack_json="$(npm pack --json --ignore-scripts --pack-destination "$staging" --workspace "$workspace")"
+            else
+              pack_json="$(npm pack --json --ignore-scripts --pack-destination "$staging")"
+            fi
+            filename="$(node -e 'const value=JSON.parse(process.argv[1]); if (!Array.isArray(value) || value.length !== 1 || typeof value[0].filename !== "string") process.exit(1); process.stdout.write(value[0].filename)' "$pack_json")"
+            archive="$staging/$filename"
+            local_integrity="$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto"); process.stdout.write("sha512-"+crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "$archive")"
+            archives+=("$archive")
+            integrities+=("$local_integrity")
+          done
+
+          # Preflight all four exact package versions. Only an E404 authorizes
+          # a new publish; any existing package must match its staged tarball.
+          for index in "${!names[@]}"; do
+            name="${names[$index]}"
+            remote_json=""
+            remote_error="$staging/$name.registry-error"
+            if remote_json="$(npm view "$name@$version" dist.integrity --json 2>"$remote_error")"; then
+              remote_integrity="$(node -e 'const value=JSON.parse(process.argv[1]); if (typeof value !== "string") process.exit(1); process.stdout.write(value)' "$remote_json")"
+              if [[ "$remote_integrity" != "${integrities[$index]}" ]]; then
+                echo "Published $name@$version integrity does not match the staged artifact" >&2
+                exit 1
+              fi
+              registry_states+=(existing)
+              continue
+            fi
+            if ! grep -q "E404" "$remote_error"; then
+              echo "Could not verify whether $name@$version already exists" >&2
+              exit 1
+            fi
+            registry_states+=(absent)
+          done
+
+          for index in "${!names[@]}"; do
+            name="${names[$index]}"
+            if [[ "${registry_states[$index]}" == existing ]]; then
+              echo "$name@$version already exists with matching integrity; skipping"
+              continue
+            fi
+            npm publish "${archives[$index]}" --ignore-scripts --access public --provenance
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

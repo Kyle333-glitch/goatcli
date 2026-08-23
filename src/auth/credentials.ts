@@ -11,6 +11,8 @@ import type { CredentialStore, GoatCredentials } from "./types.js";
 const SERVICE = "goatcli";
 const ACCOUNT = "goat-auth";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const DEVICE_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const CREDENTIAL_KEYS = [
   "accessToken",
@@ -19,6 +21,7 @@ const CREDENTIAL_KEYS = [
   "accessTokenExpiresAt",
   "refreshTokenExpiresAt",
 ] as const;
+const OPTIONAL_CREDENTIAL_KEYS = ["deviceId", "deviceSecret"] as const;
 
 export type CredentialStoreErrorCode =
   | "GOAT_CREDENTIAL_STORE_UNAVAILABLE"
@@ -84,9 +87,16 @@ export function createCredentialStore(
   return {
     async get() {
       const credentials = await readKeyring();
-      if (!credentials && (await legacyCredentialPathExists(legacyPath))) {
-        throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
+      if (!credentials) {
+        if (await legacyCredentialPathExists(legacyPath)) {
+          throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
+        }
+        return null;
       }
+      // The keyring is authoritative. A legacy plaintext file is now stale and
+      // must not remain at rest, so remove it best-effort once real
+      // credentials exist.
+      await cleanupLegacy(legacyPath, platform);
       return credentials;
     },
     async set(credentials) {
@@ -103,6 +113,7 @@ export function createCredentialStore(
         if (error instanceof CredentialStoreError) throw error;
         throw new CredentialStoreError("GOAT_CREDENTIAL_STORE_UNAVAILABLE");
       }
+      await cleanupLegacy(legacyPath, platform);
     },
     async delete() {
       try {
@@ -110,6 +121,7 @@ export function createCredentialStore(
       } catch {
         throw new CredentialStoreError("GOAT_CREDENTIAL_STORE_UNAVAILABLE");
       }
+      await cleanupLegacy(legacyPath, platform);
     },
   };
 }
@@ -136,8 +148,17 @@ export async function refreshStoredCredentials(
     }
     return null;
   }
+  // A rotated credential set keeps the previously enrolled device attestation:
+  // the control plane refresh response only carries base credentials, so carry
+  // the device fields over or inference requests silently lose attestation.
+  const refreshed = {
+    ...result.credentials,
+    ...(current.deviceId && current.deviceSecret
+      ? { deviceId: current.deviceId, deviceSecret: current.deviceSecret }
+      : {}),
+  };
   try {
-    await store.set(result.credentials);
+    await store.set(refreshed);
   } catch (error) {
     await discardUnstoredCredential(
       client,
@@ -147,7 +168,7 @@ export async function refreshStoredCredentials(
     if (error instanceof CredentialStoreError) throw error;
     throw new CredentialStoreError("GOAT_CREDENTIAL_STORE_UNAVAILABLE");
   }
-  return result.credentials;
+  return refreshed;
 }
 
 async function discardUnstoredCredential(
@@ -176,17 +197,21 @@ export function parseCredentials(raw: string): GoatCredentials | null {
 }
 
 function reconstructCredentials(value: unknown): GoatCredentials | null {
-  if (!isExactObject(value, CREDENTIAL_KEYS)) return null;
+  if (!isObjectWithKeys(value, CREDENTIAL_KEYS, OPTIONAL_CREDENTIAL_KEYS))
+    return null;
   if (
     !isToken(value.accessToken) ||
     !isToken(value.refreshToken) ||
-    value.tokenType !== "Bearer"
-  )
-    return null;
-  if (
+    value.tokenType !== "Bearer" ||
     !isTimestamp(value.accessTokenExpiresAt) ||
     !isTimestamp(value.refreshTokenExpiresAt)
   )
+    return null;
+  const hasDeviceId = value.deviceId !== undefined;
+  const hasDeviceSecret = value.deviceSecret !== undefined;
+  if (hasDeviceId !== hasDeviceSecret) return null;
+  if (value.deviceId !== undefined && !isDeviceId(value.deviceId)) return null;
+  if (value.deviceSecret !== undefined && !isToken(value.deviceSecret))
     return null;
   return {
     accessToken: value.accessToken,
@@ -194,25 +219,40 @@ function reconstructCredentials(value: unknown): GoatCredentials | null {
     tokenType: "Bearer",
     accessTokenExpiresAt: value.accessTokenExpiresAt,
     refreshTokenExpiresAt: value.refreshTokenExpiresAt,
+    ...(value.deviceId === undefined ? {} : { deviceId: value.deviceId }),
+    ...(value.deviceSecret === undefined
+      ? {}
+      : { deviceSecret: value.deviceSecret }),
   };
 }
 
-function isExactObject<const T extends readonly string[]>(
+function isObjectWithKeys<
+  const Required extends readonly string[],
+  const Optional extends readonly string[],
+>(
   value: unknown,
-  keys: T,
-): value is Record<T[number], unknown> {
+  required: Required,
+  optional: Optional,
+): value is Record<Required[number] | Optional[number], unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     return false;
-  const actual = Object.keys(value).sort((a, b) => a.localeCompare(b));
-  const expected = [...keys].sort((a, b) => a.localeCompare(b));
+  const actual = Object.keys(value);
   return (
-    actual.length === expected.length &&
-    actual.every((key, index) => key === expected[index])
+    actual.every(
+      (key) =>
+        (required as readonly string[]).includes(key) ||
+        (optional as readonly string[]).includes(key),
+    ) &&
+    required.every((key) => Object.prototype.hasOwnProperty.call(value, key))
   );
 }
 
 function isToken(value: unknown): value is string {
   return typeof value === "string" && TOKEN_PATTERN.test(value);
+}
+
+function isDeviceId(value: unknown): value is string {
+  return typeof value === "string" && DEVICE_ID_PATTERN.test(value);
 }
 
 function isTimestamp(value: unknown): value is string {
@@ -226,7 +266,9 @@ function sameCredentials(
   left: GoatCredentials,
   right: GoatCredentials,
 ): boolean {
-  return CREDENTIAL_KEYS.every((key) => left[key] === right[key]);
+  return [...CREDENTIAL_KEYS, ...OPTIONAL_CREDENTIAL_KEYS].every(
+    (key) => left[key] === right[key],
+  );
 }
 
 async function legacyCredentialPathExists(path: string): Promise<boolean> {
@@ -236,6 +278,46 @@ async function legacyCredentialPathExists(path: string): Promise<boolean> {
   } catch (error) {
     if (isMissing(error)) return false;
     throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
+  }
+}
+
+/**
+ * Best-effort removal of a stale legacy plaintext credential file and any
+ * matching temporary files left by a prior migration attempt. Never throws:
+ * a file that cannot be removed must not block keyring-backed authentication.
+ *
+ * Only regular files are removed. `lstat` (not `stat`) is used so a symlink at
+ * the credential path is never followed, and directories or other non-regular
+ * entries are left untouched. This prevents a planted symlink or directory
+ * from inducing deletion of an arbitrary path.
+ */
+async function cleanupLegacy(
+  path: string,
+  platform: NodeJS.Platform,
+): Promise<void> {
+  await removeRegularFileIfPresent(path);
+  const pathModule = getPathModule(platform);
+  const directory = pathModule.dirname(path);
+  const baseName = pathModule.basename(path);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(directory);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(`${baseName}.`) || !entry.endsWith(".tmp")) continue;
+    await removeRegularFileIfPresent(pathModule.join(directory, entry));
+  }
+}
+
+async function removeRegularFileIfPresent(path: string): Promise<void> {
+  try {
+    const stats = await fs.lstat(path);
+    if (!stats.isFile()) return;
+    await fs.rm(path, { force: true });
+  } catch {
+    // Best effort: never surface cleanup details or block authentication.
   }
 }
 

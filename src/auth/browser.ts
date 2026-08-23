@@ -67,6 +67,8 @@ function trimTrailingSeparators(value: string): string {
   return value.slice(0, end);
 }
 
+const USER_CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/;
+
 function canonicalBrowserUrl(
   value: string,
   expectedOrigin?: URL,
@@ -80,11 +82,21 @@ function canonicalBrowserUrl(
   if (
     parsed.username ||
     parsed.password ||
-    parsed.search ||
     parsed.hash ||
     parsed.pathname !== "/auth/device"
   )
     return null;
+
+  // Only a single, exactly-formed `?code=` user-code pre-fill is permitted.
+  // The code is already printed to the user, so carrying it in the URL adds no
+  // secrecy loss; any other query parameter is rejected so the opener can never
+  // be directed anywhere other than the canonical device page.
+  const params = [...parsed.searchParams.entries()];
+  if (params.length > 1) return null;
+  if (params.length === 1) {
+    const [name, code] = params[0];
+    if (name !== "code" || !USER_CODE_PATTERN.test(code)) return null;
+  }
 
   if (parsed.origin === "null") return null;
   const candidateOrigin = new URL(parsed.origin);
@@ -94,7 +106,9 @@ function canonicalBrowserUrl(
     const canonical = canonicalDeviceAuthorizationUrl(
       expectedOrigin ?? candidateOrigin,
     );
-    return parsed.toString() === canonical ? canonical : null;
+    const withoutQuery = new URL(parsed.toString());
+    withoutQuery.search = "";
+    return withoutQuery.toString() === canonical ? parsed.toString() : null;
   } catch {
     return null;
   }

@@ -78,6 +78,102 @@ test("refreshes an expiring credential through the single bounded auth client", 
   credential.accessToken.fill(0);
 });
 
+test("preserves the enrolled device attestation across an access-token refresh", async () => {
+  const deviceId = "123e4567-e89b-12d3-a456-426614174000";
+  const deviceSecret = "E".repeat(43);
+  const expiring = {
+    ...current,
+    accessTokenExpiresAt: "2026-07-17T12:00:30.000Z",
+    deviceId,
+    deviceSecret,
+  };
+  const store = new MemoryStore(expiring);
+  const credential = await preparePrivacyCredential({
+    store,
+    client: authClient(async () => ({
+      status: "authorized",
+      credentials: refreshed,
+    })),
+    now: () => NOW,
+  });
+
+  // The server refresh response carries only base credentials, so the stored
+  // set and the returned launch credential must retain the device attestation.
+  assert.equal(store.value?.deviceId, deviceId);
+  assert.equal(store.value?.deviceSecret, deviceSecret);
+  assert.equal(credential.deviceId, deviceId);
+  assert.deepEqual(
+    credential.deviceSecret,
+    new TextEncoder().encode(deviceSecret),
+  );
+  credential.accessToken.fill(0);
+  credential.deviceSecret!.fill(0);
+});
+
+test("carries the enrolled device attestation into the launch credential", async () => {
+  const deviceId = "123e4567-e89b-12d3-a456-426614174000";
+  const deviceSecret = "E".repeat(43);
+  const enrolled = {
+    ...current,
+    deviceId,
+    deviceSecret,
+  };
+  const store = new MemoryStore(enrolled);
+  const credential = await preparePrivacyCredential({
+    store,
+    client: authClient(async () => {
+      throw new Error("unused");
+    }),
+    now: () => NOW,
+  });
+
+  assert.equal(credential.deviceId, deviceId);
+  assert.deepEqual(
+    credential.deviceSecret,
+    new TextEncoder().encode(deviceSecret),
+  );
+  credential.accessToken.fill(0);
+  credential.deviceSecret!.fill(0);
+});
+
+test("omits device attestation when the keyring has none enrolled", async () => {
+  const store = new MemoryStore(current);
+  const credential = await preparePrivacyCredential({
+    store,
+    client: authClient(async () => {
+      throw new Error("unused");
+    }),
+    now: () => NOW,
+  });
+
+  assert.equal(credential.deviceId, undefined);
+  assert.equal(credential.deviceSecret, undefined);
+  credential.accessToken.fill(0);
+});
+
+test("rejects a malformed stored device secret without exposing it", async () => {
+  const malformed = {
+    ...current,
+    deviceId: "123e4567-e89b-12d3-a456-426614174000",
+    deviceSecret: "not-a-43-byte-secret",
+  };
+  const store = new MemoryStore(malformed);
+  await assert.rejects(
+    () =>
+      preparePrivacyCredential({
+        store,
+        client: authClient(async () => {
+          throw new Error("unused");
+        }),
+        now: () => NOW,
+      }),
+    (error) =>
+      error instanceof PrivacyCredentialError &&
+      error.code === "GOAT_PRIVACY_CREDENTIAL_UNAVAILABLE" &&
+      !error.message.includes("not-a-43-byte-secret"),
+  );
+});
+
 test("clears expired or revoked keyring credentials and requires login", async () => {
   for (const setup of [
     {

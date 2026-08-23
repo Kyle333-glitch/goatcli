@@ -24,6 +24,7 @@ test("launchValidatedEngine uses only fd 3/4 for an authenticated privacy sessio
   const observedRequests: Array<{
     header: { [key: string]: unknown };
     credential: Uint8Array;
+    attestation: Uint8Array;
   }> = [];
   attachEngineResponder(child, observedRequests);
   let spawnOptions: Parameters<SpawnEngine>[2] | undefined;
@@ -75,12 +76,109 @@ test("launchValidatedEngine uses only fd 3/4 for an authenticated privacy sessio
   assert.equal(child.fromEngine.destroyed, true);
 });
 
+test("threads the per-device attestation blob into the session_start frame", async () => {
+  const child = new IpcChild(4_200);
+  const processLike = new IpcProcess();
+  const observedRequests: Array<{
+    header: { [key: string]: unknown };
+    credential: Uint8Array;
+    attestation: Uint8Array;
+  }> = [];
+  attachEngineResponder(child, observedRequests);
+  const credential = new TextEncoder().encode("A".repeat(43));
+  const deviceId = "123e4567-e89b-12d3-a456-426614174000";
+  const deviceSecret = new TextEncoder().encode("Z".repeat(43));
+  const attestation = new TextEncoder().encode(
+    `${deviceId}:${new TextDecoder().decode(deviceSecret)}`,
+  );
+
+  const result = await launchValidatedEngine(
+    { executablePath: "C:\\GOAT\\goat-engine.exe", platform: "win32" },
+    ["privacy", "diagnostics", "delete", "PATH_SECRET_3HT6"],
+    {
+      cwd: "C:\\work",
+      spawnEngine: () => child as unknown as ChildProcess,
+      processLike,
+      privacyIpc: {
+        mode: "eager",
+        engineIntegrity: "verified",
+        credentialStore: "available",
+        credential,
+        credentialExpiresAtUnixMs: Date.now() + 60_000,
+        attestation,
+        launcherPid: processLike.pid,
+      },
+    },
+  );
+
+  assert.deepEqual(result, { exitCode: 0, signal: null });
+  assert.equal(observedRequests.length, 1);
+  const request = observedRequests[0]!;
+  assert.equal(request.header.attestation_length, attestation.byteLength);
+  assert.deepEqual(request.attestation, attestation);
+  assert.equal(request.header.message_type, "session_start");
+});
+
+test("lazy IPC carries provider-attested device enrollment into the start frame", async () => {
+  const child = new IpcChild(4_200);
+  const processLike = new IpcProcess();
+  const observedRequests: Array<{
+    header: { [key: string]: unknown };
+    credential: Uint8Array;
+    attestation: Uint8Array;
+  }> = [];
+  attachEngineResponder(child, observedRequests);
+  const expectedCredential = new TextEncoder().encode("B".repeat(43));
+  const deviceId = "123e4567-e89b-12d3-a456-426614174000";
+  const deviceSecret = new TextEncoder().encode("Y".repeat(43));
+  const expectedAttestation = new TextEncoder().encode(
+    `${deviceId}:${new TextDecoder().decode(deviceSecret)}`,
+  );
+
+  const resultPromise = launchValidatedEngine(
+    { executablePath: "C:\\GOAT\\goat-engine.exe", platform: "win32" },
+    ["run"],
+    {
+      cwd: "C:\\work",
+      spawnEngine: () => child as unknown as ChildProcess,
+      processLike,
+      privacyIpc: {
+        mode: "lazy",
+        engineIntegrity: "verified",
+        credentialStore: "unavailable",
+        async credentialProvider() {
+          return {
+            accessToken: expectedCredential.slice(),
+            expiresAtUnixMs: Date.now() + 60_000,
+            deviceId,
+            deviceSecret: deviceSecret.slice(),
+          };
+        },
+        launcherPid: processLike.pid,
+      },
+    },
+  );
+
+  await Promise.resolve();
+  child.fromEngine.write(Buffer.from("GOATIPC2"));
+  const result = await resultPromise;
+  assert.deepEqual(result, { exitCode: 0, signal: null });
+  assert.equal(observedRequests.length, 1);
+  const request = observedRequests[0]!;
+  assert.equal(
+    request.header.attestation_length,
+    expectedAttestation.byteLength,
+  );
+  assert.deepEqual(request.attestation, expectedAttestation);
+});
+
 test("lazy IPC waits for v2 activation before preparing a credential", async () => {
   const child = new IpcChild(4_200);
   const processLike = new IpcProcess();
   const observedRequests: Array<{
     header: { [key: string]: unknown };
     credential: Uint8Array;
+    attestation: Uint8Array;
   }> = [];
   attachEngineResponder(child, observedRequests);
   let providerCalls = 0;
@@ -475,6 +573,7 @@ function attachEngineResponder(
   observed: Array<{
     header: { [key: string]: unknown };
     credential: Uint8Array;
+    attestation: Uint8Array;
   }>,
 ): void {
   let bytes = Buffer.alloc(0);
@@ -485,7 +584,15 @@ function attachEngineResponder(
     const secret = bytes.subarray(8, 40);
     const headerLength = bytes.readUInt32BE(40);
     const credentialLength = bytes.readUInt16BE(44);
-    const frameLength = 6 + headerLength + credentialLength + 32;
+    const header = JSON.parse(
+      bytes.subarray(46, 46 + headerLength).toString("utf8"),
+    ) as { [key: string]: unknown };
+    const attestationLength =
+      header.message_type === "session_start"
+        ? ((header.attestation_length as number | undefined) ?? 0)
+        : 0;
+    const frameLength =
+      6 + headerLength + credentialLength + attestationLength + 32;
     if (bytes.byteLength < 40 + frameLength) return;
 
     const frame = bytes.subarray(40, 40 + frameLength);
@@ -496,13 +603,14 @@ function attachEngineResponder(
       .update(authenticated)
       .digest();
     assert.equal(timingSafeEqual(receivedTag, expectedTag), true);
-    const header = JSON.parse(
-      frame.subarray(6, 6 + headerLength).toString("utf8"),
-    ) as { [key: string]: unknown };
+    const credentialEnd = 6 + headerLength + credentialLength;
     const credential = Uint8Array.from(
-      frame.subarray(6 + headerLength, 6 + headerLength + credentialLength),
+      frame.subarray(6 + headerLength, credentialEnd),
     );
-    observed.push({ header, credential });
+    const attestation = Uint8Array.from(
+      frame.subarray(credentialEnd, credentialEnd + attestationLength),
+    );
+    observed.push({ header, credential, attestation });
 
     const response = encodeAck(
       secret,

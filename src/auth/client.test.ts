@@ -104,7 +104,6 @@ test("sends only the six fixed essential auth and usage request shapes", async (
       if (usage.status === "ok") {
         assert.equal(usage.summary.version, "v0.3.2");
         assert.deepEqual(usage.summary.account, {
-          tier: "regular",
           status: "active",
         });
         const sanitized = JSON.stringify(usage.summary);
@@ -185,6 +184,120 @@ test("sends only the six fixed essential auth and usage request shapes", async (
   }
 });
 
+test("provisions a per-device attestation credential through the bounded request shape", async () => {
+  const captured: RecordedRequest[] = [];
+  const DEVICE_ID = "123e4567-e89b-12d3-a456-426614174000";
+  const DEVICE_SECRET = "s".repeat(43);
+  await withServer(
+    async (request, response, origin) => {
+      captured.push(await record(request));
+      response.statusCode = 200;
+      response.setHeader("content-type", "application/json");
+      if (
+        request.url === "/v1/auth/device/credentials" &&
+        request.headers.authorization === `Bearer ${ACCESS_TOKEN}`
+      ) {
+        response.end(
+          JSON.stringify({ deviceId: DEVICE_ID, deviceSecret: DEVICE_SECRET }),
+        );
+      } else {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ error: { code: "not_found" } }));
+      }
+    },
+    async (origin) => {
+      const client = createAuthApiClient(origin);
+      const provisioned = await client.provisionDeviceCredential!(
+        ACCESS_TOKEN,
+        DEVICE_ID,
+        "goatcli",
+      );
+      assert.deepEqual(provisioned, {
+        deviceId: DEVICE_ID,
+        deviceSecret: DEVICE_SECRET,
+      });
+    },
+  );
+
+  assert.equal(captured.length, 1);
+  const request = captured[0]!;
+  assert.equal(request.method, "POST");
+  assert.equal(request.url, "/v1/auth/device/credentials");
+  assert.equal(request.headers.authorization, `Bearer ${ACCESS_TOKEN}`);
+  assert.equal(request.headers["user-agent"], "GOAT-auth/1");
+  assert.equal(request.headers.accept, "application/json");
+  assert.equal(request.headers["content-type"], "application/json");
+  assert.deepEqual(JSON.parse(request.body), {
+    deviceId: DEVICE_ID,
+    label: "goatcli",
+  });
+  assert.equal(new URL(request.url, "http://loopback").search, "");
+  const outbound = JSON.stringify(captured);
+  for (const canary of [
+    "PROMPT_SECRET_7QX9",
+    "SOURCE_CODE_SECRET_4JK2",
+    "PATH_SECRET_3HT6",
+    "ENV_SECRET_9DK1",
+  ]) {
+    assert.equal(outbound.includes(canary), false);
+  }
+});
+
+test("provisionDeviceCredential validates inputs and responses before returning", async () => {
+  const DEVICE_ID = "123e4567-e89b-12d3-a456-426614174000";
+  const DEVICE_SECRET = "s".repeat(43);
+  // Invalid device id or access token is rejected before any request is sent.
+  let requests = 0;
+  await withServer(
+    async (_request, response) => {
+      requests += 1;
+      response.end();
+    },
+    async (origin) => {
+      const client = createAuthApiClient(origin);
+      await assert.rejects(
+        () => client.provisionDeviceCredential!("TOKEN_SECRET_8MVP", DEVICE_ID),
+        hasClientCode("invalid_auth_data"),
+      );
+      await assert.rejects(
+        () => client.provisionDeviceCredential!(ACCESS_TOKEN, "not-a-uuid"),
+        hasClientCode("invalid_auth_data"),
+      );
+    },
+  );
+  assert.equal(requests, 0);
+
+  // A mismatched device id, missing secret, or unknown key is rejected.
+  for (const body of [
+    { deviceId: "other", deviceSecret: DEVICE_SECRET },
+    { deviceId: DEVICE_ID },
+    {
+      deviceId: DEVICE_ID,
+      deviceSecret: DEVICE_SECRET,
+      extra: "ENV_SECRET_9DK1",
+    },
+    { deviceId: DEVICE_ID, deviceSecret: "not-a-token" },
+  ]) {
+    await withServer(
+      async (_request, response) => {
+        response.statusCode = 200;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify(body));
+      },
+      async (origin) => {
+        await assert.rejects(
+          () =>
+            createAuthApiClient(origin).provisionDeviceCredential!(
+              ACCESS_TOKEN,
+              DEVICE_ID,
+            ),
+          hasClientCode("unexpected_response"),
+        );
+      },
+    );
+  }
+});
+
 test("validates token formats before any network transmission", async () => {
   let requests = 0;
   await withServer(
@@ -253,15 +366,32 @@ test("strictly rejects unknown response keys and noncanonical browser URLs", asy
     await opener.open(canonicalDeviceAuthorizationUrl(origin)),
     true,
   );
+  // A well-formed user-code pre-fill is opened (the code is not secret).
+  assert.equal(
+    await opener.open(
+      `${canonicalDeviceAuthorizationUrl(origin)}?code=ABCD-EFGH`,
+    ),
+    true,
+  );
+  // Arbitrary or malformed query parameters are never opened.
   assert.equal(
     await opener.open(
       `${canonicalDeviceAuthorizationUrl(origin)}?code=PROMPT_SECRET_7QX9`,
     ),
     false,
   );
+  assert.equal(
+    await opener.open(
+      `${canonicalDeviceAuthorizationUrl(origin)}?code=ABCD-EFGH&extra=1`,
+    ),
+    false,
+  );
   assert.deepEqual(
     calls.map((call) => call.args),
-    [["http://127.0.0.1:4040/auth/device"]],
+    [
+      ["http://127.0.0.1:4040/auth/device"],
+      ["http://127.0.0.1:4040/auth/device?code=ABCD-EFGH"],
+    ],
   );
 
   const hostileEnvironmentCalls: Array<{
@@ -319,7 +449,10 @@ test("strictly rejects usage PII, generic bags, and arbitrary nested objects", a
     { ...usageSummary(), metadata: { arbitrary: "ENV_SECRET_9DK1" } },
     {
       ...usageSummary(),
-      recent: [...usageSummary().recent, { arbitrary: "TOKEN_SECRET_8MVP" }],
+      quota: {
+        ...usageSummary().quota,
+        allowanceMicrousd: "TOKEN_SECRET_8MVP",
+      },
     },
   ];
 
@@ -470,40 +603,20 @@ function usageSummary() {
     version: "v0.3.2",
     generatedAt: NOW,
     account: {
-      tier: "regular",
       status: "active",
     },
     quota: {
-      allowanceMicrousd: "100000000",
-      usedMicrousd: "1000",
-      activeReservedMicrousd: "0",
-      totalCommittedMicrousd: "1000",
-      remainingMicrousd: "99999000",
+      usedPercent: 0,
+      committedPercent: 0,
+      remainingPercent: 99,
       lowQuota: false,
-      lowQuotaThresholdPercent: 20,
     },
-    window: { seconds: 3600, startedAt: NOW, nextResetAt: LATER },
-    usage: {
-      regularMicrousd: "1000",
-      premiumMicrousd: "0",
-      totalMicrousd: "1000",
+    window: {
+      kind: "rolling",
+      seconds: 86400,
+      startedAt: NOW,
+      nextUsageExpiresAt: LATER,
     },
-    recent: [
-      {
-        label: "24h",
-        windowSeconds: 86400,
-        regularMicrousd: "1000",
-        premiumMicrousd: "0",
-        totalMicrousd: "1000",
-      },
-      {
-        label: "7d",
-        windowSeconds: 604800,
-        regularMicrousd: "1000",
-        premiumMicrousd: "0",
-        totalMicrousd: "1000",
-      },
-    ],
   };
 }
 

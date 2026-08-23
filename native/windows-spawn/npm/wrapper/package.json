@@ -1,0 +1,39 @@
+{
+  "name": "goatcli-windows-spawn",
+  "version": "0.4.0",
+  "description": "Secure native Windows process spawn for GOAT privacy IPC",
+  "license": "MIT",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "require": "./index.js",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "loader.js",
+    "index.d.ts",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "os": [
+    "win32"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "optionalDependencies": {
+    "goatcli-windows-spawn-win32-arm64-msvc": "0.4.0",
+    "goatcli-windows-spawn-win32-x64-msvc": "0.4.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "goatNativeAbi": 1
+}

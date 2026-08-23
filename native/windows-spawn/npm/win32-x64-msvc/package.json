@@ -1,0 +1,27 @@
+{
+  "name": "goatcli-windows-spawn-win32-x64-msvc",
+  "version": "0.4.0",
+  "description": "GOAT Windows x64 native privacy-spawn binding",
+  "license": "MIT",
+  "main": "goatcli-windows-spawn.win32-x64-msvc.node",
+  "files": [
+    "goatcli-windows-spawn.win32-x64-msvc.node",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "goatNativeAbi": 1
+}

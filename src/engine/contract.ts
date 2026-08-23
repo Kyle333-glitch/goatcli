@@ -53,7 +53,7 @@ export interface EngineManifest {
 export interface ResolvedEngine {
   executablePath: ExecutablePath;
   manifestPath: string | null;
-  source: "local-install" | "development";
+  source: "local-install" | "npm-package" | "development";
   releaseChannel: ReleaseChannel;
   platform: GoatPlatform;
   architecture: GoatArchitecture;
@@ -78,6 +78,7 @@ export type EngineErrorCode =
   | "GOAT_ENGINE_ARGS_TOO_LONG"
   | "GOAT_PRIVACY_AUTH_REQUIRED"
   | "GOAT_PRIVACY_IPC_FAILED"
+  | "GOAT_WINDOWS_PRIVACY_SPAWN_UNAVAILABLE"
   | "GOAT_NODE_VERSION_UNSUPPORTED";
 
 export class EngineContractError extends Error {
@@ -107,7 +108,7 @@ const SAFE_ENGINE_ERRORS: Record<EngineErrorCode, readonly [string, string]> = {
   ],
   GOAT_ENGINE_MISSING: [
     "The GOAT engine is not installed correctly.",
-    "Run `goat doctor`.",
+    "Reinstall GOAT with `npm install -g goatcli`, then run `goat doctor`.",
   ],
   GOAT_ENGINE_NOT_FILE: [
     "The GOAT engine installation is invalid.",
@@ -160,6 +161,10 @@ const SAFE_ENGINE_ERRORS: Record<EngineErrorCode, readonly [string, string]> = {
   GOAT_PRIVACY_IPC_FAILED: [
     "The GOAT privacy session could not be established.",
     "Run `goat doctor`.",
+  ],
+  GOAT_WINDOWS_PRIVACY_SPAWN_UNAVAILABLE: [
+    "This GOAT installation cannot safely launch privacy IPC on Windows.",
+    "Reinstall GOAT, then run `goat doctor`.",
   ],
   GOAT_NODE_VERSION_UNSUPPORTED: [
     "This Node.js version cannot safely launch GOAT privacy IPC on Windows.",

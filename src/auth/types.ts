@@ -4,6 +4,14 @@ export interface GoatCredentials {
   tokenType: "Bearer";
   accessTokenExpiresAt: string;
   refreshTokenExpiresAt: string;
+  /** Per-device attestation enrollment (v0.5.2). Optional for older stores. */
+  deviceId?: string;
+  deviceSecret?: string;
+}
+
+export interface DeviceCredential {
+  deviceId: string;
+  deviceSecret: string;
 }
 
 export interface DeviceSessionResponse {
@@ -31,40 +39,39 @@ export type PollResult =
       message: string;
     };
 
-export type UsageTier = "free" | "regular" | "premium" | "none";
 export type UsageAccountStatus =
   "active" | "no_entitlement" | "quota_suspended" | "quota_revoked";
 
 export interface UsageAccountSummary {
-  tier: UsageTier;
   status: UsageAccountStatus;
 }
 
 export interface UsageQuotaSummary {
-  allowanceMicrousd: string | null;
-  usedMicrousd: string;
-  activeReservedMicrousd: string;
-  totalCommittedMicrousd: string;
-  remainingMicrousd: string | null;
+  usedPercent: number | null;
+  committedPercent: number | null;
+  remainingPercent: number | null;
   lowQuota: boolean;
-  lowQuotaThresholdPercent: number;
 }
 
 export interface UsageWindowSummary {
+  kind: "rolling" | "daily";
   seconds: number | null;
   startedAt: string | null;
-  nextResetAt: string | null;
+  nextUsageExpiresAt: string | null;
 }
 
-export interface UsageAmountBreakdown {
-  regularMicrousd: string;
-  premiumMicrousd: string;
-  totalMicrousd: string;
-}
-
-export interface UsageRecentTotal extends UsageAmountBreakdown {
-  label: "24h" | "7d";
-  windowSeconds: number;
+export interface UsageSessionSummary {
+  kind: "daily";
+  sessionsPerDay: number | null;
+  sessionsRemaining: number | null;
+  usedMinutes: number | null;
+  remainingMinutes: number | null;
+  sessionSeconds: number;
+  roundingMinutes: number;
+  graceMinutes: number;
+  activeSessionId: string | null;
+  activeSessionStartedAt: string | null;
+  activeSessionMinutes: number;
 }
 
 export interface UsageSummaryResponse {
@@ -72,9 +79,8 @@ export interface UsageSummaryResponse {
   generatedAt: string;
   account: UsageAccountSummary;
   quota: UsageQuotaSummary;
+  session?: UsageSessionSummary;
   window: UsageWindowSummary;
-  usage: UsageAmountBreakdown;
-  recent: UsageRecentTotal[];
 }
 
 export type UsageSummaryResult =
@@ -95,6 +101,20 @@ export interface AuthApiClient {
   refresh(refreshToken: string): Promise<PollResult>;
   revoke(refreshToken: string): Promise<void>;
   getUsageSummary(accessToken: string): Promise<UsageSummaryResult>;
+  closeUsageSession?(
+    accessToken: string,
+    sessionId: string,
+  ): Promise<{ chargedMinutes: number; sessionsRemaining: number | null }>;
+  /**
+   * Enroll (or rotate) a per-device attestation secret. Best-effort: callers
+   * treat a missing implementation or failure as "no attestation" rather than
+   * a login failure.
+   */
+  provisionDeviceCredential?(
+    accessToken: string,
+    deviceId: string,
+    label?: string,
+  ): Promise<DeviceCredential>;
 }
 
 export interface CredentialStore {

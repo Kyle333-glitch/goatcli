@@ -2,20 +2,46 @@
 
 `goatcli` is the public npm launcher for GOAT, a coding-agent product. The npm package name is `goatcli`; the installed terminal command and product display name are `goat` and GOAT.
 
-The launcher discovers, verifies, and launches a separately installed GOAT engine executable. Starting with v0.4.0, the launcher also owns verified engine updates: it can download, authenticate, install, and report on engine releases without forwarding update requests to the engine. The launcher does not implement an independent telemetry, diagnostic-upload, or analytics channel.
+The launcher discovers, verifies, and launches the matching platform-specific GOAT engine package installed by npm. Starting with v0.4.0, the launcher also owns verified engine updates: it can download, authenticate, install, and report on engine releases without forwarding update requests to the engine. The launcher does not implement an independent telemetry, diagnostic-upload, or analytics channel.
 
 ## Requirements
 
-- Node.js 24.16.0 or newer
+- Node.js 22.18.0 or newer for the npm launcher path
 - Windows or macOS
 - x64 or arm64
-- A compatible GOAT engine (installed manually or via `goat update`)
+- The matching platform-specific GOAT engine package (installed automatically by npm)
 
-Install the public launcher with:
+The native installer path has no Node.js or npm requirement.
+
+Install GOAT with one command:
 
 ```shell
-npm install --global goatcli
+npm install -g goatcli
 ```
+
+The launcher declares the four platform-specific engine packages as npm optional dependencies. npm installs only the package matching the current Windows/macOS and x64/arm64 platform, so the engine and the launcher arrive together without an install lifecycle script. The launcher validates the engine manifest, compatibility range, checksum, and release policy before starting it.
+
+## Native installer (no Node.js or npm)
+
+For a one-download setup, use the standalone native installer. It installs a native `goat` launcher, adds it to the per-user command path, downloads the matching standalone engine, and verifies it before activation. Node.js and npm are not required on the target machine.
+
+| Platform      | Download                                                                                                                                  |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows x64   | [`goat-installer-windows-x64.exe`](https://github.com/Kyle333-glitch/goatcli/releases/latest/download/goat-installer-windows-x64.exe)     |
+| Windows arm64 | [`goat-installer-windows-arm64.exe`](https://github.com/Kyle333-glitch/goatcli/releases/latest/download/goat-installer-windows-arm64.exe) |
+| macOS x64     | [`goat-installer-macos-x64`](https://github.com/Kyle333-glitch/goatcli/releases/latest/download/goat-installer-macos-x64)                 |
+| macOS arm64   | [`goat-installer-macos-arm64`](https://github.com/Kyle333-glitch/goatcli/releases/latest/download/goat-installer-macos-arm64)             |
+
+On macOS, make the downloaded file executable before running it:
+
+```shell
+chmod +x goat-installer-macos-arm64
+./goat-installer-macos-arm64
+```
+
+The native launcher stores user-scoped files under `%LOCALAPPDATA%\\goat` on Windows and `~/Library/Application Support/goat` on macOS. It uses the operating system's built-in PowerShell/curl and tar tools, downloads only from the compiled npm registry origin, and supports `goat update` for re-installing the pinned engine release.
+
+On Windows, npm also selects an exact-version, architecture-specific optional package used to create the private descriptor 3/4 pipes for the four privacy commands that require launcher IPC. That native component is required on both Node 22 and Node 24. If it is unavailable or does not match the launcher version and architecture, those privacy commands fail closed; GOAT never falls back to broadly inheriting Windows handles. Ordinary engine launches and all macOS launches continue to use the platform's standard spawn path.
 
 Then run:
 
@@ -100,12 +126,14 @@ Update metadata and artifacts are accessed only through the launcher's fixed-ori
 
 ## Engine discovery and integrity
 
-The launcher selects the local engine for the current platform, architecture, and release channel from per-user application data:
+The launcher selects the engine for the current platform, architecture, and release channel in this order:
 
-- Windows: `%LOCALAPPDATA%\goat\engines\<channel>\win32-<arch>\bin\goat-engine.exe`
-- macOS: `~/Library/Application Support/goat/engines/<channel>/darwin-<arch>/bin/goat-engine`
+1. An existing app-data installation created by `goat update`:
+   - Windows: `%LOCALAPPDATA%\goat\engines\<channel>\win32-<arch>\bin\goat-engine.exe`
+   - macOS: `~/Library/Application Support/goat/engines/<channel>/darwin-<arch>/bin/goat-engine`
+2. The matching npm engine package installed alongside `goatcli`.
 
-If no compatible engine is installed, use `goat update` (see [Launcher-owned verified updates](#launcher-owned-verified-updates) above).
+If the platform engine package is unavailable or an existing app-data installation is damaged, use `goat doctor` to inspect the installation. `goat update` remains available for later signed engine releases (see [Launcher-owned verified updates](#launcher-owned-verified-updates) above).
 
 The adjacent `goat-engine.json` manifest is required for normal installations. The launcher rejects unknown manifest fields, verifies the platform, architecture, release channel, executable name, launcher compatibility range, and SHA-256 checksum, and then spawns the engine without a shell. Production environment overrides such as `GOAT_ENGINE_PATH` and `GOAT_DEV_ENGINE_PATH` are ignored and removed before the child handoff. Explicit development engines are available only through test/development dependency injection, not a production environment variable.
 
