@@ -1,3 +1,4 @@
+import { CredentialStoreError } from "../auth/credentials.js";
 import type {
   AuthApiClient,
   CredentialStore,
@@ -23,7 +24,22 @@ const ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000;
 
 export async function runUsage(options: UsageOptions): Promise<number> {
   const now = options.now?.() ?? new Date();
-  const current = await options.store.get();
+  let current: GoatCredentials | null;
+  try {
+    current = await options.store.get();
+  } catch (error) {
+    if (
+      error instanceof CredentialStoreError &&
+      (error.code === "GOAT_CREDENTIAL_MIGRATION_FAILED" ||
+        error.code === "GOAT_CREDENTIALS_INVALID")
+    ) {
+      return writeUsageError(options, {
+        code: "no_credentials",
+        message: "No GOAT login credentials found. Run `goat login`.",
+      });
+    }
+    throw error;
+  }
   if (!current) {
     return writeUsageError(options, {
       code: "no_credentials",

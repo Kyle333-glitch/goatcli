@@ -39,11 +39,14 @@ jobs:
     steps:
       - name: Resolve runner platforms
         id: set
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PLATFORMS_INPUT: ${{ inputs.platforms }}
         run: |
           # Windows ARM can hang while terminating that native file-lock
           # fixture after the assertion, so that scenario is excluded there.
           windows='{"os":"windows-latest","arch":"x64","node":"24.16.0","rust_target":"x86_64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-x64-msvc","native_package_dir":"win32-x64-msvc","test_shard":"1/1","test_excludes":""},{"os":"windows-latest","arch":"x64","node":"22.18.0","rust_target":"x86_64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-x64-msvc","native_package_dir":"win32-x64-msvc","test_shard":"1/1","test_excludes":""},{"os":"windows-11-arm","arch":"arm64","node":"24.16.0","rust_target":"aarch64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-arm64-msvc","native_package_dir":"win32-arm64-msvc","test_shard":"1/2","test_excludes":"src/update/locked-exe.native.test.ts"},{"os":"windows-11-arm","arch":"arm64","node":"24.16.0","rust_target":"aarch64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-arm64-msvc","native_package_dir":"win32-arm64-msvc","test_shard":"2/2","test_excludes":"src/update/locked-exe.native.test.ts"},{"os":"windows-11-arm","arch":"arm64","node":"22.18.0","rust_target":"aarch64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-arm64-msvc","native_package_dir":"win32-arm64-msvc","test_shard":"1/2","test_excludes":"src/update/locked-exe.native.test.ts"},{"os":"windows-11-arm","arch":"arm64","node":"22.18.0","rust_target":"aarch64-pc-windows-msvc","native_package":"goatcli-windows-spawn-win32-arm64-msvc","native_package_dir":"win32-arm64-msvc","test_shard":"2/2","test_excludes":"src/update/locked-exe.native.test.ts"}'
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.platforms }}" = "all" ]; then
+          if [ "$EVENT_NAME" != "workflow_dispatch" ] || [ "$PLATFORMS_INPUT" = "all" ]; then
             extra=',{"os":"macos-latest","arch":"arm64","node":"24.16.0","test_shard":"1/1","test_excludes":""},{"os":"macos-15-intel","arch":"x64","node":"24.16.0","test_shard":"1/1","test_excludes":""}'
             cross_repo='{"os":["windows-latest","macos-latest"]}'
           else
