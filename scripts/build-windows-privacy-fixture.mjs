@@ -7,8 +7,22 @@ if (process.argv.length !== 4) {
   );
 }
 
+const repoRoot = path.resolve(import.meta.dirname, "..");
 const entrypoint = path.resolve(process.argv[2]);
 const outfile = path.resolve(process.argv[3]);
+
+function assertInsideRepo(resolvedPath, label) {
+  const relative = path.relative(repoRoot, resolvedPath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(
+      `The Windows privacy fixture ${label} must stay within the repository checkout.`,
+    );
+  }
+}
+
+assertInsideRepo(entrypoint, "entrypoint");
+assertInsideRepo(outfile, "outfile");
+
 if (!fs.statSync(entrypoint).isFile()) {
   throw new Error("The Windows privacy fixture entrypoint is unavailable.");
 }

@@ -28,11 +28,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-
 jobs:
   matrix:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     outputs:
       verify: ${{ steps.set.outputs.verify }}
@@ -59,6 +58,8 @@ jobs:
   verify:
     needs: matrix
     name: verify (${{ matrix.os }} / ${{ matrix.arch }} / node ${{ matrix.node }} / shard ${{ matrix.test_shard }})
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.matrix.outputs.verify) }}
@@ -85,8 +86,10 @@ jobs:
       - name: Setup pinned Rust toolchain (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --target "${{ matrix.rust_target }}"
+          rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt --target "$env:RUST_TARGET"
           rustup default 1.88.0
           rustc --version --verbose
           cargo --version
@@ -156,13 +159,18 @@ jobs:
       - name: Build native Windows spawner
         if: runner.os == 'Windows'
         shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          NATIVE_PACKAGE_DIR: ${{ matrix.native_package_dir }}
         run: |
-          npm run native:build -- --release --target "${{ matrix.rust_target }}" --output-dir "./native/windows-spawn/npm/${{ matrix.native_package_dir }}"
+          npm run native:build -- --release --target "$RUST_TARGET" --output-dir "./native/windows-spawn/npm/$NATIVE_PACKAGE_DIR"
         timeout-minutes: 15
 
       - name: Verify native npm artifacts
         if: runner.os == 'Windows'
-        run: npm run verify:windows-spawn-packages -- --native-package "${{ matrix.native_package }}"
+        env:
+          NATIVE_PACKAGE: ${{ matrix.native_package }}
+        run: npm run verify:windows-spawn-packages -- --native-package "$NATIVE_PACKAGE"
         timeout-minutes: 10
 
       - name: Check formatting
@@ -185,6 +193,7 @@ jobs:
         shell: bash
         env:
           TEST_EXCLUDES: ${{ matrix.test_excludes }}
+          TEST_SHARD: ${{ matrix.test_shard }}
         run: |
           set -o pipefail
           if [[ -n "$TEST_EXCLUDES" ]]; then
@@ -199,7 +208,7 @@ jobs:
             echo "No test files selected" >&2
             exit 1
           fi
-          npm run test:ci -- --test-shard="${{ matrix.test_shard }}" "${test_args[@]}" --test-reporter=tap | tee test-output.log
+          npm run test:ci -- --test-shard="$TEST_SHARD" "${test_args[@]}" --test-reporter=tap | tee test-output.log
         timeout-minutes: 20
 
       - name: Check for unexpectedly skipped native tests
@@ -271,6 +280,8 @@ jobs:
     needs: matrix
     name: v0.4.1 immutable mocked cross-repo (${{ matrix.os }})
     if: ${{ github.event_name == 'workflow_dispatch' }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.matrix.outputs.cross_repo) }}
@@ -345,11 +356,11 @@ jobs:
 
       - name: Install goat-engine dependencies
         working-directory: goat-engine
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Install goat-control-plane dependencies
         working-directory: goat-control-plane
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Build and verify native Windows privacy spawner
         if: runner.os == 'Windows'

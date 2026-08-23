@@ -126,7 +126,7 @@ function verifyPackage(npmCliPath, destinationRoot, definition) {
     "goat-engine.json",
     "package.json",
     executableRelative,
-  ].sort();
+  ].sort((a, b) => a.localeCompare(b));
   assertSafeArchive(archive, expectedFiles, definition.name);
 
   const extracted = path.join(destination, "extracted");
@@ -146,7 +146,7 @@ function verifyPackage(npmCliPath, destinationRoot, definition) {
     `${definition.name} extraction`,
   );
   const packageRoot = path.join(extracted, "package");
-  const actualFiles = walk(packageRoot).sort();
+  const actualFiles = walk(packageRoot).sort((a, b) => a.localeCompare(b));
   if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
     throw new Error(`${definition.name} tarball contains unexpected files`);
   }
@@ -276,7 +276,8 @@ function assertSafeArchive(archive, expectedFiles, name) {
         !entry.startsWith("package/") ||
         path.posix.normalize(entry) !== entry,
     ) ||
-    JSON.stringify([...entries].sort()) !== JSON.stringify(expectedEntries)
+    JSON.stringify([...entries].sort((a, b) => a.localeCompare(b))) !==
+      JSON.stringify(expectedEntries)
   ) {
     throw new Error(`${name} archive contains unsafe or unexpected paths`);
   }

@@ -11,12 +11,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: read
-
 jobs:
   build:
     name: build installer (${{ matrix.platform }} / ${{ matrix.architecture }})
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -49,6 +48,9 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node for release pin resolution
+        # No cache input configured, so setup-node performs no cache restore;
+        # zizmor cannot see through the action's default-cache heuristic.
+        # zizmor: ignore[cache-poisoning]
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24.16.0"
@@ -136,7 +138,7 @@ jobs:
       - name: Build native installer
         env:
           GOAT_ENGINE_SIGNING_PUBLIC_KEY_BASE64: ${{ secrets.GOAT_ENGINE_SIGNING_PUBLIC_KEY_BASE64 }}
-        run: cargo build --manifest-path native/installer/Cargo.toml --release --target "${{ matrix.target }}"
+        run: cargo build --manifest-path native/installer/Cargo.toml --release --locked --target "${{ matrix.target }}"
 
       - name: Stage installer asset
         shell: bash

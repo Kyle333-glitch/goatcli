@@ -116,11 +116,11 @@ if (
 }
 const optionalDependencyNames = Object.keys(
   pkg.optionalDependencies ?? {},
-).sort();
+).sort((a, b) => a.localeCompare(b));
 const expectedOptionalDependencyNames = [
   ...enginePackages.map((definition) => definition.name),
   "goatcli-windows-spawn",
-].sort();
+].sort((a, b) => a.localeCompare(b));
 if (
   optionalDependencyNames.length !== expectedOptionalDependencyNames.length ||
   optionalDependencyNames.some(
@@ -431,10 +431,10 @@ function validateWindowsSpawnWorkspaceManifests() {
       const expectedPlatformNames = windowsSpawnPackages
         .filter((candidate) => candidate.kind === "platform")
         .map((candidate) => candidate.name)
-        .sort();
+        .sort((a, b) => a.localeCompare(b));
       const actualPlatformNames = Object.keys(
         manifest.optionalDependencies ?? {},
-      ).sort();
+      ).sort((a, b) => a.localeCompare(b));
       if (
         actualPlatformNames.length !== expectedPlatformNames.length ||
         actualPlatformNames.some(
@@ -530,7 +530,7 @@ function validateWindowsSpawnWorkspaceManifests() {
             `goatcli-windows-spawn.win32-${definition.cpu}-msvc.node`,
           ];
     const actualFiles = Array.isArray(manifest.files)
-      ? [...manifest.files].sort()
+      ? [...manifest.files].sort((a, b) => a.localeCompare(b))
       : [];
     if (
       actualFiles.length !== expectedFiles.length ||
@@ -617,7 +617,9 @@ function packAndValidateNativePackage(
   const archivePaths = listArchivePaths(archivePath);
   assertSamePaths(
     archivePaths,
-    metadataPaths.map((filePath) => `package/${filePath}`).sort(),
+    metadataPaths
+      .map((filePath) => `package/${filePath}`)
+      .sort((a, b) => a.localeCompare(b)),
     `${definition.name} archive headers and npm metadata differ`,
   );
   assertRegularArchiveHeaders(archivePath, archivePaths.length);
@@ -725,7 +727,7 @@ function validateNativePackedMetadata(fileEntries, definition) {
   if (paths.length !== expectedCount) {
     throw artifactError(`${definition.name} packed file allowlist differs`);
   }
-  return paths.sort();
+  return paths.sort((a, b) => a.localeCompare(b));
 }
 
 function validateLoadableNativeBinding(packageRoot, definition) {
@@ -747,7 +749,7 @@ function validateLoadableNativeBinding(packageRoot, definition) {
     const binding = require(process.argv[1]);
     const testOnlyExports = ${JSON.stringify(testOnlyExports)};
     process.stdout.write(JSON.stringify({
-      exportNames: Object.keys(binding).sort(),
+      exportNames: Object.keys(binding).sort((a, b) => a.localeCompare(b)),
       abi: binding.WINDOWS_PRIVACY_SPAWN_ABI_VERSION,
       spawnType: typeof binding.spawnWindowsPrivacyProcess,
       processType: typeof binding.SpawnedWindowsPrivacyProcess,
@@ -755,7 +757,7 @@ function validateLoadableNativeBinding(packageRoot, definition) {
         typeof binding.SpawnedWindowsPrivacyProcess === "function"
           ? Object.getOwnPropertyNames(
               binding.SpawnedWindowsPrivacyProcess.prototype,
-            ).sort()
+            ).sort((a, b) => a.localeCompare(b))
           : [],
       presentTestExports: testOnlyExports.filter((name) => name in binding),
     }));
@@ -781,7 +783,7 @@ function validateLoadableNativeBinding(packageRoot, definition) {
     "SpawnedWindowsPrivacyProcess",
     "WINDOWS_PRIVACY_SPAWN_ABI_VERSION",
     "spawnWindowsPrivacyProcess",
-  ].sort();
+  ].sort((a, b) => a.localeCompare(b));
   if (!Array.isArray(binding.exportNames)) {
     throw artifactError(`${definition.name} native export probe was invalid`);
   }
@@ -804,7 +806,7 @@ function validateLoadableNativeBinding(packageRoot, definition) {
     "takeLauncherReadFd",
     "takeLauncherWriteFd",
     "terminate",
-  ].sort();
+  ].sort((a, b) => a.localeCompare(b));
   if (!Array.isArray(binding.processExportNames)) {
     throw artifactError(
       `${definition.name} native process export probe was invalid`,
@@ -1014,7 +1016,7 @@ function packActualArtifact(npmCli, temporaryRoot, attempt) {
   const archivePaths = listArchivePaths(archivePath);
   const expectedArchivePaths = metadataPaths
     .map((filePath) => "package/" + filePath)
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
   assertSamePaths(
     archivePaths,
     expectedArchivePaths,
@@ -1107,7 +1109,7 @@ function validatePackedMetadata(fileEntries) {
   ) {
     throw artifactError("packed payload contains tests or a private engine");
   }
-  return paths.sort();
+  return paths.sort((a, b) => a.localeCompare(b));
 }
 
 function listArchivePaths(archivePath) {
@@ -1131,7 +1133,7 @@ function listArchivePaths(archivePath) {
       }
       return entry;
     })
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
 }
 
 function assertRegularArchiveHeaders(archivePath, expectedCount) {
@@ -1183,7 +1185,7 @@ function walkRegularFiles(packageRoot) {
     }
   };
   visit(packageRoot, "");
-  return files.sort();
+  return files.sort((a, b) => a.localeCompare(b));
 }
 
 function validatePackedPackageJson(packageRoot) {
@@ -1204,10 +1206,12 @@ function validatePackedPackageJson(packageRoot) {
       "packed package metadata differs from the release input",
     );
   }
-  const expectedDependencies = Object.keys(pkg.dependencies ?? {}).sort();
-  const packedDependencies = Object.keys(
-    packedPackage.dependencies ?? {},
-  ).sort();
+  const expectedDependencies = Object.keys(pkg.dependencies ?? {}).sort(
+    (a, b) => a.localeCompare(b),
+  );
+  const packedDependencies = Object.keys(packedPackage.dependencies ?? {}).sort(
+    (a, b) => a.localeCompare(b),
+  );
   assertSamePaths(
     packedDependencies,
     expectedDependencies,
@@ -1222,10 +1226,10 @@ function validatePackedPackageJson(packageRoot) {
   }
   const expectedOptionalDependencies = Object.keys(
     pkg.optionalDependencies ?? {},
-  ).sort();
+  ).sort((a, b) => a.localeCompare(b));
   const packedOptionalDependencies = Object.keys(
     packedPackage.optionalDependencies ?? {},
-  ).sort();
+  ).sort((a, b) => a.localeCompare(b));
   assertSamePaths(
     packedOptionalDependencies,
     expectedOptionalDependencies,
@@ -1282,19 +1286,25 @@ function inspectProductionDependencyGraph(npmCli) {
           dependency.extraneous !== true,
       ),
     );
-    const requiredTopLevel = Object.keys(pkg.dependencies ?? {}).sort();
-    const optionalTopLevel = Object.keys(pkg.optionalDependencies ?? {}).sort();
+    const requiredTopLevel = Object.keys(pkg.dependencies ?? {}).sort((a, b) =>
+      a.localeCompare(b),
+    );
+    const optionalTopLevel = Object.keys(pkg.optionalDependencies ?? {}).sort(
+      (a, b) => a.localeCompare(b),
+    );
     const workspacePackageNames = windowsSpawnPackages
       .map((definition) => definition.name)
-      .sort();
+      .sort((a, b) => a.localeCompare(b));
     const allowedTopLevel = [
       ...new Set([
         ...requiredTopLevel,
         ...optionalTopLevel,
         ...workspacePackageNames,
       ]),
-    ].sort();
-    const actualTopLevel = Object.keys(productionRoots).sort();
+    ].sort((a, b) => a.localeCompare(b));
+    const actualTopLevel = Object.keys(productionRoots).sort((a, b) =>
+      a.localeCompare(b),
+    );
     const missingRequired = requiredTopLevel.filter(
       (name) => !actualTopLevel.includes(name),
     );

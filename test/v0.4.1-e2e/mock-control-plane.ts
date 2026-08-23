@@ -345,7 +345,12 @@ function parseDeviceEnrollment(body: Buffer): { deviceId: string } | null {
     if (typeof value !== "object" || value === null || Array.isArray(value))
       return null;
     const record = value as Record<string, unknown>;
-    if (Object.keys(record).sort().join(",") !== "deviceId,label") return null;
+    if (
+      Object.keys(record)
+        .sort((a, b) => a.localeCompare(b))
+        .join(",") !== "deviceId,label"
+    )
+      return null;
     if (
       typeof record.deviceId !== "string" ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
