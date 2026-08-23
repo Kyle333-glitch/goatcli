@@ -48,7 +48,7 @@ jobs:
         # No cache input configured, so setup-node performs no cache restore;
         # zizmor cannot see through the action's default-cache heuristic.
         # zizmor: ignore[cache-poisoning]
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning]
         with:
           node-version: "24.16.0"
 
@@ -128,7 +128,7 @@ jobs:
         # No cache input configured, so setup-node performs no cache restore;
         # zizmor cannot see through the action's default-cache heuristic.
         # zizmor: ignore[cache-poisoning]
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning]
         with:
           node-version: "24.16.0"
           registry-url: "https://registry.npmjs.org"
