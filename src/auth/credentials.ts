@@ -19,7 +19,6 @@ const CREDENTIAL_KEYS = [
   "accessTokenExpiresAt",
   "refreshTokenExpiresAt",
 ] as const;
-const LEGACY_CREDENTIAL_MAX_BYTES = 4 * 1024;
 
 export type CredentialStoreErrorCode =
   | "GOAT_CREDENTIAL_STORE_UNAVAILABLE"
@@ -82,35 +81,12 @@ export function createCredentialStore(
     return parsed;
   }
 
-  async function migrateLegacy(): Promise<GoatCredentials | null> {
-    const raw = await readLegacyFile(legacyPath);
-    if (raw === null) {
-      await cleanupStaleTemps(legacyPath, platform);
-      return null;
-    }
-    const credentials = parseCredentials(raw);
-    if (!credentials)
-      throw new CredentialStoreError("GOAT_CREDENTIALS_INVALID");
-    try {
-      await keyring.setPassword(SERVICE, ACCOUNT, JSON.stringify(credentials));
-      const verified = await readKeyring();
-      if (!verified || !sameCredentials(credentials, verified)) {
-        throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-      }
-    } catch (error) {
-      if (error instanceof CredentialStoreError) throw error;
-      throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-    }
-
-    await cleanupLegacy(legacyPath, platform);
-    return credentials;
-  }
-
   return {
     async get() {
       const credentials = await readKeyring();
-      if (!credentials) return migrateLegacy();
-      await cleanupLegacy(legacyPath, platform).catch(() => undefined);
+      if (!credentials && (await legacyCredentialPathExists(legacyPath))) {
+        throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
+      }
       return credentials;
     },
     async set(credentials) {
@@ -127,11 +103,8 @@ export function createCredentialStore(
         if (error instanceof CredentialStoreError) throw error;
         throw new CredentialStoreError("GOAT_CREDENTIAL_STORE_UNAVAILABLE");
       }
-      await cleanupLegacy(legacyPath, platform).catch(() => undefined);
     },
     async delete() {
-      // Remove plaintext first so a failed cleanup cannot be silently remigrated.
-      await cleanupLegacy(legacyPath, platform);
       try {
         await keyring.deletePassword(SERVICE, ACCOUNT);
       } catch {
@@ -256,108 +229,13 @@ function sameCredentials(
   return CREDENTIAL_KEYS.every((key) => left[key] === right[key]);
 }
 
-async function readLegacyFile(path: string): Promise<string | null> {
-  let pathStats: Awaited<ReturnType<typeof fs.lstat>>;
+async function legacyCredentialPathExists(path: string): Promise<boolean> {
   try {
-    pathStats = await fs.lstat(path);
+    await fs.lstat(path);
+    return true;
   } catch (error) {
-    if (isMissing(error)) return null;
+    if (isMissing(error)) return false;
     throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-  }
-  if (!pathStats.isFile()) {
-    throw new CredentialStoreError("GOAT_CREDENTIALS_INVALID");
-  }
-
-  let handle: Awaited<ReturnType<typeof fs.open>>;
-  try {
-    handle = await fs.open(path, "r");
-  } catch (error) {
-    if (isMissing(error)) return null;
-    throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-  }
-
-  const bytes = Buffer.alloc(LEGACY_CREDENTIAL_MAX_BYTES + 1);
-  try {
-    let stats;
-    try {
-      stats = await handle.stat();
-    } catch {
-      throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-    }
-    if (
-      !stats.isFile() ||
-      stats.size < 1 ||
-      stats.size > LEGACY_CREDENTIAL_MAX_BYTES
-    ) {
-      throw new CredentialStoreError("GOAT_CREDENTIALS_INVALID");
-    }
-
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      let bytesRead: number;
-      try {
-        ({ bytesRead } = await handle.read(
-          bytes,
-          offset,
-          bytes.byteLength - offset,
-          null,
-        ));
-      } catch {
-        throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-      }
-      if (bytesRead === 0) break;
-      offset += bytesRead;
-    }
-    if (offset < 1 || offset > LEGACY_CREDENTIAL_MAX_BYTES) {
-      throw new CredentialStoreError("GOAT_CREDENTIALS_INVALID");
-    }
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(
-        bytes.subarray(0, offset),
-      );
-    } catch {
-      throw new CredentialStoreError("GOAT_CREDENTIALS_INVALID");
-    }
-  } finally {
-    bytes.fill(0);
-    // A close failure must not mask a meaningful error raised above.
-    await handle?.close().catch(() => undefined);
-  }
-}
-
-async function cleanupLegacy(
-  path: string,
-  platform: NodeJS.Platform,
-): Promise<void> {
-  try {
-    await fs.rm(path, { force: true });
-  } catch {
-    throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-  }
-  await cleanupStaleTemps(path, platform);
-}
-
-async function cleanupStaleTemps(
-  path: string,
-  platform: NodeJS.Platform,
-): Promise<void> {
-  const pathModule = getPathModule(platform);
-  const directory = pathModule.dirname(path);
-  const baseName = pathModule.basename(path);
-  let entries: string[];
-  try {
-    entries = await fs.readdir(directory);
-  } catch (error) {
-    if (isMissing(error)) return;
-    throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-  }
-  for (const entry of entries) {
-    if (!entry.startsWith(`${baseName}.`) || !entry.endsWith(".tmp")) continue;
-    try {
-      await fs.rm(pathModule.join(directory, entry), { force: true });
-    } catch {
-      throw new CredentialStoreError("GOAT_CREDENTIAL_MIGRATION_FAILED");
-    }
   }
 }
 

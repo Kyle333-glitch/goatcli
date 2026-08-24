@@ -122,9 +122,85 @@ test("atomic replacement writes a complete replacement in place", async () => {
   assert.equal(await fileExists(`${target}.test.tmp`), false);
 });
 
+test("Windows process termination falls back without invoking taskkill for invalid PIDs", () => {
+  const adapter = getPlatformAdapter("win32");
+  const commandCalls: Array<{ command: string; args: string[] }> = [];
+  const killedSignals: NodeJS.Signals[] = [];
+  for (const pid of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+    const child = {
+      pid,
+      kill(signal?: NodeJS.Signals | number) {
+        if (typeof signal === "string") killedSignals.push(signal);
+        return true;
+      },
+    };
+    adapter.terminateProcess(child, "SIGTERM", {
+      runCommand(command, args) {
+        commandCalls.push({ command, args: [...args] });
+        return { status: 0 };
+      },
+    });
+  }
+  assert.deepEqual(commandCalls, []);
+  assert.deepEqual(killedSignals, [
+    "SIGTERM",
+    "SIGTERM",
+    "SIGTERM",
+    "SIGTERM",
+    "SIGTERM",
+  ]);
+});
+
 test("Windows process termination uses taskkill for process trees and falls back to child kill", () => {
   const adapter = getPlatformAdapter("win32");
   const commandCalls: Array<{ command: string; args: string[] }> = [];
+  const events: string[] = [];
+  const killedSignals: NodeJS.Signals[] = [];
+  const child = {
+    pid: 4242,
+    kill(signal?: NodeJS.Signals | number) {
+      events.push("child.kill");
+      if (typeof signal === "string") killedSignals.push(signal);
+      return true;
+    },
+  };
+
+  adapter.terminateProcess(child, "SIGTERM", {
+    runCommand(command, args) {
+      events.push(`${command} ${args.join(" ")}`);
+      commandCalls.push({ command, args: [...args] });
+      return { status: 0 };
+    },
+  });
+
+  assert.deepEqual(commandCalls, [
+    { command: "taskkill", args: ["/pid", "4242", "/T"] },
+  ]);
+  assert.deepEqual(killedSignals, []);
+  assert.deepEqual(events, ["taskkill /pid 4242 /T"]);
+
+  adapter.terminateProcess(child, "SIGBREAK", {
+    runCommand(command, args) {
+      events.push(`${command} ${args.join(" ")}`);
+      commandCalls.push({ command, args: [...args] });
+      return { status: 1 };
+    },
+  });
+
+  assert.deepEqual(killedSignals, ["SIGBREAK"]);
+  assert.deepEqual(events.slice(1), [
+    "taskkill /pid 4242 /T",
+    "taskkill /pid 4242 /T /F",
+    "child.kill",
+  ]);
+});
+
+test("macOS termination targets the detached process group before the child", () => {
+  const adapter = getPlatformAdapter("darwin");
+  const groupCalls: Array<{
+    processGroupId: number;
+    signal: NodeJS.Signals;
+  }> = [];
   const killedSignals: NodeJS.Signals[] = [];
   const child = {
     pid: 4242,
@@ -135,25 +211,21 @@ test("Windows process termination uses taskkill for process trees and falls back
   };
 
   adapter.terminateProcess(child, "SIGTERM", {
-    runCommand(command, args) {
-      commandCalls.push({ command, args: [...args] });
-      return { status: 0 };
+    killGroup(processGroupId, signal) {
+      groupCalls.push({ processGroupId, signal });
     },
   });
 
-  assert.deepEqual(commandCalls, [
-    { command: "taskkill", args: ["/pid", "4242", "/T"] },
-  ]);
-  assert.deepEqual(killedSignals, ["SIGTERM"]);
+  assert.deepEqual(groupCalls, [{ processGroupId: -4242, signal: "SIGTERM" }]);
+  assert.deepEqual(killedSignals, []);
 
-  adapter.terminateProcess(child, "SIGBREAK", {
-    runCommand(command, args) {
-      commandCalls.push({ command, args: [...args] });
-      return { status: 1 };
+  adapter.terminateProcess(child, "SIGHUP", {
+    killGroup() {
+      throw new Error("group already exited");
     },
   });
 
-  assert.deepEqual(killedSignals, ["SIGTERM", "SIGBREAK"]);
+  assert.deepEqual(killedSignals, ["SIGHUP"]);
 });
 
 async function fileExists(filePath: string): Promise<boolean> {
